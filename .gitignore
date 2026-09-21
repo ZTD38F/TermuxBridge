@@ -1,0 +1,55 @@
+# Secrets / credentials
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*token*
+*secret*
+*credentials*
+*cookie*
+*session*
+
+# Local tunnel/runtime state
+.tunnel*
+*.pid
+*.sock
+runtime/
+state/
+tmp/
+temp/
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Android / Termux local state
+.storage/
+.cache/
+.termux/
+
+# Browser automation state — never commit authenticated profiles
+.chatgpt-browser-profile/
+.chatgpt-browser-state/
+chromium-profile/
+browser-profile/
+
+# Backups generated on-device
+.bridge-backup/
+*.bak
+*.backup
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
