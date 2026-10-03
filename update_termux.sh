@@ -180,14 +180,48 @@ PY
 
 install_management_from_stage() {
   local source_root="$1"
-  for file in "${MANAGEMENT_FILES[@]}"; do
+  for file in start_bridge.sh status_bridge.sh stop_bridge.sh; do
     cp -a "$source_root/runtime/$file" "$ROOT/$file"
   done
+  if [[ ! -f "$ROOT/supervisor.py" ]]; then
+    cp -a "$source_root/runtime/supervisor.py" "$ROOT/supervisor.py"
+  fi
   cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh"
   mkdir -p "$HOME/bin"
   cp -a "$source_root/termuxbridgectl" "$HOME/bin/termuxbridgectl"
   chmod 700 "$ROOT/start_bridge.sh" "$ROOT/status_bridge.sh" "$ROOT/stop_bridge.sh" "$ROOT/update_termux.sh" "$HOME/bin/termuxbridgectl"
   chmod 600 "$ROOT/supervisor.py"
+}
+
+update_supervisor() {
+  local candidate="$1"
+  [[ -f "$ROOT/supervisor.py" ]] || { cp -a "$candidate" "$ROOT/supervisor.py"; return 0; }
+  [[ "$(sha256sum "$ROOT/supervisor.py" | awk '{print $1}')" != "$(sha256sum "$candidate" | awk '{print $1}')" ]] || return 0
+
+  local busy
+  busy="$(router_call /__bridge/status | python -c 'import json,sys; print(sum(int(v) for v in json.load(sys.stdin).get("inflight",{}).values()))')"
+  if [[ "$busy" != 0 ]]; then log "supervisor update deferred inflight=$busy"; return 0; fi
+
+  local old_pid backup new_pid
+  old_pid="$(cat "$ROOT/supervisor.pid" 2>/dev/null || true)"
+  backup="$ROOT/supervisor.py.previous"
+  cp -a "$ROOT/supervisor.py" "$backup"
+  if pid_alive "$old_pid"; then kill "$old_pid" 2>/dev/null || true; fi
+  cp -a "$candidate" "$ROOT/supervisor.py"
+  chmod 600 "$ROOT/supervisor.py"
+  nohup env TERMUXBRIDGE_ROOT="$ROOT" python "$ROOT/supervisor.py" >"$ROOT/logs/supervisor.log" 2>&1 &
+  new_pid=$!
+  printf '%s\n' "$new_pid" >"$ROOT/supervisor.pid"
+  sleep 1
+  if ! pid_alive "$new_pid" || ! router_call /__bridge/healthz >/dev/null 2>&1; then
+    if pid_alive "$new_pid"; then kill "$new_pid" 2>/dev/null || true; fi
+    cp -a "$backup" "$ROOT/supervisor.py"
+    nohup env TERMUXBRIDGE_ROOT="$ROOT" python "$ROOT/supervisor.py" >"$ROOT/logs/supervisor.log" 2>&1 &
+    printf '%s\n' "$!" >"$ROOT/supervisor.pid"
+    log "ERROR supervisor update rolled back"
+    return 1
+  fi
+  log "supervisor update committed pid=$new_pid"
 }
 
 ensure_seamless_topology() {
@@ -301,6 +335,7 @@ journal COMMITTED
 # Old backend retirement happens after commit. A crash here leaves a harmless
 # extra old backend; the next update/start can clean it without routing to it.
 if pid_alive "$PREVIOUS_PID" && [[ "$PREVIOUS_PID" != "$CANDIDATE_PID" ]]; then kill "$PREVIOUS_PID" 2>/dev/null || true; fi
+update_supervisor "$TMP/source/runtime/supervisor.py"
 
 # Transport updates are a separate blue/green transaction. Both transport
 # generations target the same authenticated supervisor, so application state is
