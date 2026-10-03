@@ -94,6 +94,11 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:
+        # Compatibility-only health endpoint used by the legacy updater during
+        # the one-time migration. It exposes no state and authorizes no MCP call.
+        if self.path == "/healthz":
+            self._json(200, {"ok": True})
+            return
         if not self._auth_or_reject():
             return
         if self.path == "/__bridge/healthz":
