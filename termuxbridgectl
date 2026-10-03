@@ -1,0 +1,49 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -Eeuo pipefail
+
+ROOT="${TERMUXBRIDGE_ROOT:-$HOME/termux-mcp-bridge}"
+JOB_ID=38038
+
+case "${1:-check}" in
+  check)
+    "$ROOT/status_bridge.sh"
+    ;;
+  status)
+    printf 'TermuxBridge\n'
+    printf '  source_commit: %s\n' "$(cat "$ROOT/source_commit" 2>/dev/null || echo unknown)"
+    "$ROOT/status_bridge.sh"
+    ;;
+  update)
+    shift
+    exec "$ROOT/update_termux.sh" --force "$@"
+    ;;
+  restart)
+    "$ROOT/stop_bridge.sh"
+    exec "$ROOT/start_bridge.sh"
+    ;;
+  logs)
+    tail -n "${2:-100}" "$ROOT/logs/update.log" 2>/dev/null || true
+    ;;
+  auto-update-enable)
+    termux-job-scheduler \
+      --script "$ROOT/update_termux.sh" \
+      --job-id "$JOB_ID" \
+      --period-ms 86400000 \
+      --network any \
+      --battery-not-low true \
+      --storage-not-low true \
+      --persisted true >/dev/null
+    echo "TermuxBridge automatic updates enabled."
+    ;;
+  auto-update-disable)
+    termux-job-scheduler --cancel --job-id "$JOB_ID" >/dev/null 2>&1 || true
+    echo "TermuxBridge automatic updates disabled."
+    ;;
+  auto-update-status)
+    termux-job-scheduler --pending
+    ;;
+  *)
+    echo "Usage: termuxbridgectl {check|status|update|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status}" >&2
+    exit 2
+    ;;
+esac
