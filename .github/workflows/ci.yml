@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, stable]
+  pull_request:
+    branches: [main, stable]
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Compile canonical runtime
+        run: |
+          python -m py_compile             runtime/bridge_server.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py
+
+      - name: Parse shell scripts
+        run: |
+          bash -n runtime/start_bridge.sh
+          bash -n runtime/status_bridge.sh
+          bash -n runtime/stop_bridge.sh
+          bash -n update_termux.sh
+          bash -n termuxbridgectl
+
+      - name: Validate update safety contract
+        run: |
+          grep -Fq 'TERMUXBRIDGE_CHANNEL:-stable' update_termux.sh
+          grep -Fq 'source_commit' update_termux.sh
+          grep -Fq 'rollback()' update_termux.sh
+          grep -Fq 'termux-job-scheduler' termuxbridgectl
+          grep -Fq -- '--persisted true' termuxbridgectl
+          grep -Fq 'TermuxBridge' runtime/bridge_server.py
+
+          if grep -Eq 'secrets/|logs/|\.bridge-backup/|bin/tunnel-client' update_termux.sh; then
+            echo "Updater must not source managed runtime from secret/log/binary state"
+            exit 1
+          fi
+
+      - name: Secret-pattern guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE             --exclude-dir=.git             --exclude='*.md'             '(sk-[A-Za-z0-9_-]{16,}|github_pat_[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|tunnel_[0-9a-f]{32})' .; then
+            echo "Potential credential committed to TermuxBridge"
+            exit 1
+          fi
+
+      - name: Reject forbidden runtime state
+        run: |
+          test ! -e runtime/secrets
+          test ! -e runtime/logs
+          test ! -e runtime/bin
+          test ! -e runtime/.bridge-backup
