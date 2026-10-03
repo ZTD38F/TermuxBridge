@@ -7,16 +7,13 @@ TermuxBridge is the canonical ChatGPT ↔ Android/Termux execution bridge.
 ```text
 ChatGPT
   ↓
-Secure MCP Tunnel
+Secure MCP Tunnel (long-lived)
   ↓
-TermuxBridge
-  ↓
-Android / Termux
-  ├─ local MCP HTTP server
-  ├─ files and text operations
-  ├─ command execution
-  ├─ background jobs
-  └─ service-specific adapters / browser automation
+authenticated local supervisor/router :8765
+  ├─ active runtime generation A :18771
+  └─ candidate runtime generation B :18772
+       ↓
+Android / Termux tools, jobs and adapters
 ```
 
 The deployed bridge currently runs inside the Termux application sandbox, not as Android root.
@@ -69,42 +66,36 @@ The `gpt` command should establish/re-establish the bridge connection without re
 
 ## Automatic updates
 
-TermuxBridge uses a conservative stable-channel updater.
+Automatic update is a built-in TermuxBridge product function. Ordinary runtime
+updates do **not** stop the OpenAI tunnel.
 
-```text
-GitHub stable commit
-      ↓
-download to staging
-      ↓
-Python + Bash validation
-      ↓
-backup current managed runtime
-      ↓
-stop bridge
-      ↓
-activate new runtime
-      ↓
-start + health/status verification
-      ↓
-success, or automatic rollback
-```
+The updater downloads an immutable candidate, validates Python/shell and MCP
+tool compatibility, starts it on the inactive backend port, switches the
+supervisor route atomically, drains requests already assigned to the old
+generation, observes the candidate, and only then commits `current`.
+A transaction journal under `state/update.json` makes interrupted updates
+recoverable. Local supervisor/backend traffic is authenticated with separate
+machine-local secrets.
 
-The updater manages only the tracked bridge runtime files. It never replaces `secrets/`, authenticated browser profiles, logs, PID files, local jobs, or the locally downloaded tunnel binaries.
+Tunnel-client changes are classified separately as `TRANSPORT_UPDATE`.
+They are checksum-verified and use a blue/green handoff against the same
+supervisor; runtime releases never replace the tunnel binary implicitly.
 
-The phone uses Android's Termux:API job scheduler with a persistent daily job. Manage it with:
+Useful commands:
 
 ```bash
+termuxbridgectl check
+termuxbridgectl status
+termuxbridgectl update-status
+termuxbridgectl update-now
 termuxbridgectl auto-update-status
 termuxbridgectl auto-update-enable
 termuxbridgectl auto-update-disable
 ```
 
-Manual checks and updates:
-
-```bash
-termuxbridgectl check
-termuxbridgectl update
-```
+The first upgrade from the legacy flat runtime performs one controlled
+migration to the supervisor topology. Subsequent ordinary runtime updates keep
+the tunnel process alive.
 
 ## Security
 
