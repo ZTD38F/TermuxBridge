@@ -40,7 +40,19 @@ chmod 600 "$KEYFILE" "$TUNNEL_FILE"
 [[ -x "$CLIENT" ]] || { echo "ERROR: tunnel-client-runtime is missing. Re-run install_termux.sh"; exit 1; }
 [[ -s "$KEYFILE" ]] || { echo "ERROR: API key is missing. Re-run install_termux.sh"; exit 1; }
 [[ -s "$TUNNEL_FILE" ]] || { echo "ERROR: tunnel ID is missing. Re-run install_termux.sh"; exit 1; }
-[[ -f "$BRIDGE_DIR/supervisor.py" ]] || { echo "ERROR: supervisor.py is missing; run termuxbridgectl update"; exit 1; }
+
+# Legacy updaters do not know supervisor.py yet. During the one-time migration
+# only, recover that file from the same immutable commit already selected by the
+# legacy updater. Future generations carry/manage it normally.
+if [[ ! -f "$BRIDGE_DIR/supervisor.py" ]]; then
+  SOURCE_COMMIT="$(cat "$BRIDGE_DIR/source_commit" 2>/dev/null || true)"
+  [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: supervisor missing and source commit is invalid"; exit 1; }
+  SUPERVISOR_TMP="$BRIDGE_DIR/.supervisor-migration.tmp"
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60     "https://raw.githubusercontent.com/ZTD38F/TermuxBridge/$SOURCE_COMMIT/runtime/supervisor.py"     -o "$SUPERVISOR_TMP"
+  python -m py_compile "$SUPERVISOR_TMP"
+  mv "$SUPERVISOR_TMP" "$BRIDGE_DIR/supervisor.py"
+  chmod 600 "$BRIDGE_DIR/supervisor.py"
+fi
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
