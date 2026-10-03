@@ -2,6 +2,8 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
+BRIDGE_VERSION = "1.1.0"
+
 import hashlib
 import hmac
 import importlib.util
@@ -248,7 +250,7 @@ def respond(msg):
     if mid is None: return None
     method = msg.get("method")
     if method == "initialize":
-        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "TermuxBridge", "version": "1.0.0"}, "instructions": "Command execution is open and runs with the ordinary Termux app UID (no root assumed). File helper tools remain scoped to Termux/shared storage. Never request or expose secrets. Confirm consequential writes or destructive actions."}
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "TermuxBridge", "version": BRIDGE_VERSION}, "instructions": "Command execution is open and runs with the ordinary Termux app UID (no root assumed). File helper tools remain scoped to Termux/shared storage. Never request or expose secrets. Confirm consequential writes or destructive actions."}
     elif method == "ping": result = {}
     elif method == "tools/list": result = {"tools": TOOLS}
     elif method == "tools/call":
@@ -259,7 +261,7 @@ def respond(msg):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "TermuxSafeBridge/1.0.2"
+    server_version = f"TermuxSafeBridge/{BRIDGE_VERSION}"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.log_date_time_string(), fmt % args))
