@@ -103,7 +103,7 @@ if PHONE_SERVER.is_file():
             })
 
 
-GOOGLE_SERVER = ROOT / "termux-mcp-bridge" / "google_bridge_tools.py"
+GOOGLE_SERVER = Path(__file__).resolve().with_name("google_bridge_tools.py")
 GOOGLE_MODULE = None
 GOOGLE_TOOLS = {}
 if GOOGLE_SERVER.is_file():
