@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Validate runtime
+        run: |
+          python -m py_compile runtime/*.py
+          bash -n runtime/start_bridge.sh runtime/status_bridge.sh runtime/stop_bridge.sh update_termux.sh termuxbridgectl
+      - name: Build release artifacts
+        run: |
+          TAG="${GITHUB_REF_NAME:-manual-$GITHUB_SHA}"
+          tar -czf "TermuxBridge-$TAG.tar.gz" \
+            runtime update_termux.sh termuxbridgectl TUNNEL_CLIENT_VERSION README.md SECURITY.md
+          sha256sum "TermuxBridge-$TAG.tar.gz" > SHA256SUMS.txt
+          python - <<'PY'
+          import json, os
+          tag=os.environ.get("GITHUB_REF_NAME") or ("manual-"+os.environ["GITHUB_SHA"])
+          data={
+            "schema_version":1,
+            "bridge":"TermuxBridge",
+            "version":tag,
+            "source_commit":os.environ["GITHUB_SHA"],
+            "update_kind":"runtime",
+            "supervisor_protocol":1,
+            "config_schema":1,
+            "state_schema":1,
+          }
+          open("bridge-release.json","w").write(json.dumps(data,indent=2)+"\n")
+          PY
+      - name: Attest artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            TermuxBridge-*.tar.gz
+            SHA256SUMS.txt
+            bridge-release.json
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            TermuxBridge-*.tar.gz SHA256SUMS.txt bridge-release.json \
+            --target "${{ github.sha }}" \
+            --title "TermuxBridge ${{ github.ref_name }}" \
+            --generate-notes
