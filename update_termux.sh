@@ -83,6 +83,29 @@ for file in "${MANAGED[@]}"; do
 done
 [[ -f "$TMP/source/update_termux.sh" ]] || { log "ERROR release is missing update_termux.sh"; exit 1; }
 [[ -f "$TMP/source/termuxbridgectl" ]] || { log "ERROR release is missing termuxbridgectl"; exit 1; }
+[[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { log "ERROR release is missing TUNNEL_CLIENT_VERSION"; exit 1; }
+
+TUNNEL_TAG="$(tr -d '[:space:]' <"$TMP/source/TUNNEL_CLIENT_VERSION")"
+[[ "$TUNNEL_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  log "ERROR invalid tunnel-client version pin: $TUNNEL_TAG"
+  exit 1
+}
+
+TUNNEL_ASSET="tunnel-client-runtime-${TUNNEL_TAG}-linux-arm64.zip"
+TUNNEL_BASE="https://github.com/openai/tunnel-client/releases/download/${TUNNEL_TAG}"
+mkdir -p "$TMP/tunnel"
+curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 \
+  "$TUNNEL_BASE/$TUNNEL_ASSET" -o "$TMP/$TUNNEL_ASSET"
+curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 \
+  "$TUNNEL_BASE/SHA256SUMS.txt" -o "$TMP/SHA256SUMS.txt"
+grep -E "[[:space:]]${TUNNEL_ASSET//./\\.}$" "$TMP/SHA256SUMS.txt" >"$TMP/tunnel.sha256"
+(cd "$TMP" && sha256sum -c tunnel.sha256) >>"$LOG" 2>&1
+unzip -q "$TMP/$TUNNEL_ASSET" -d "$TMP/tunnel"
+TUNNEL_NEW="$TMP/tunnel/tunnel-client-runtime"
+[[ -f "$TUNNEL_NEW" ]] || { log "ERROR verified archive has no tunnel-client-runtime"; exit 1; }
+chmod +x "$TUNNEL_NEW"
+"$TUNNEL_NEW" --version >>"$LOG" 2>&1
+"$TUNNEL_NEW" run --help >/dev/null 2>&1
 
 python -m py_compile \
   "$TMP/source/runtime/bridge_server.py" \
@@ -105,6 +128,7 @@ for file in "${MANAGED[@]}"; do
 done
 [[ ! -e "$ROOT/update_termux.sh" ]] || cp -a "$ROOT/update_termux.sh" "$BACKUP/update_termux.sh"
 [[ ! -e "$HOME/bin/termuxbridgectl" ]] || cp -a "$HOME/bin/termuxbridgectl" "$BACKUP/termuxbridgectl"
+[[ ! -e "$ROOT/bin/tunnel-client-runtime" ]] || cp -a "$ROOT/bin/tunnel-client-runtime" "$BACKUP/tunnel-client-runtime"
 [[ ! -e "$STATE" ]] || cp -a "$STATE" "$BACKUP/source_commit"
 
 rollback() {
@@ -114,8 +138,9 @@ rollback() {
     [[ ! -e "$BACKUP/$file" ]] || cp -a "$BACKUP/$file" "$ROOT/$file"
   done
   [[ ! -e "$BACKUP/update_termux.sh" ]] || cp -a "$BACKUP/update_termux.sh" "$ROOT/update_termux.sh"
-  mkdir -p "$HOME/bin"
+  mkdir -p "$HOME/bin" "$ROOT/bin"
   [[ ! -e "$BACKUP/termuxbridgectl" ]] || cp -a "$BACKUP/termuxbridgectl" "$HOME/bin/termuxbridgectl"
+  [[ ! -e "$BACKUP/tunnel-client-runtime" ]] || cp -a "$BACKUP/tunnel-client-runtime" "$ROOT/bin/tunnel-client-runtime"
   if [[ -e "$BACKUP/source_commit" ]]; then
     cp -a "$BACKUP/source_commit" "$STATE"
   else
@@ -132,8 +157,9 @@ if ! {
     cp -a "$TMP/source/runtime/$file" "$ROOT/$file"
   done
   cp -a "$TMP/source/update_termux.sh" "$ROOT/update_termux.sh"
-  mkdir -p "$HOME/bin"
+  mkdir -p "$HOME/bin" "$ROOT/bin"
   cp -a "$TMP/source/termuxbridgectl" "$HOME/bin/termuxbridgectl"
+  install -m 700 "$TUNNEL_NEW" "$ROOT/bin/tunnel-client-runtime"
   chmod +x "$ROOT/start_bridge.sh" "$ROOT/status_bridge.sh" "$ROOT/stop_bridge.sh" "$ROOT/update_termux.sh" "$HOME/bin/termuxbridgectl"
   printf '%s\n' "$TARGET" >"$STATE"
   "$ROOT/start_bridge.sh" >>"$LOG" 2>&1
@@ -157,4 +183,4 @@ find "$BACKUPS" -maxdepth 1 -type d -name 'auto-update-*' -printf '%T@ %p\n' |
   sort -nr | awk 'NR>3 {sub(/^[^ ]+ /,""); print}' |
   while IFS= read -r old; do rm -rf "$old"; done
 
-log "ok activated $TARGET"
+log "ok activated $TARGET with tunnel-client $TUNNEL_TAG"
