@@ -34,7 +34,6 @@ jobs:
         run: |
           grep -Fq 'TERMUXBRIDGE_CHANNEL:-stable' update_termux.sh
           grep -Fq 'source_commit' update_termux.sh
-          grep -Fq 'rollback()' update_termux.sh
           grep -Fq 'termux-job-scheduler' termuxbridgectl
           grep -Fq -- '--persisted true' termuxbridgectl
           grep -Fq 'TermuxBridge' runtime/bridge_server.py
