@@ -35,15 +35,16 @@ The deployed bridge currently runs inside the Termux application sandbox, not as
 
 GitHub is the canonical source for TermuxBridge code, documentation, installer logic and version history.
 
-Until the first exact import of the existing phone runtime is completed, the phone deployment remains the authoritative source for any file that has not yet been copied into this repository. Do not reconstruct missing runtime files from memory and present them as exact originals.
+The first exact, secret-filtered import of the working phone runtime is complete. The tracked files under `runtime/` are the canonical bridge runtime source.
 
-After the initial import:
+Normal workflow:
 
-1. Changes are made in or synchronized to this repository.
-2. The repository version is reviewed before deployment.
-3. Deployment to Termux is verified on the phone.
-4. Runtime fixes made directly on the phone must be synchronized back to GitHub before they are considered complete.
-5. Secrets, tokens, cookies, browser profiles and generated logs are never committed.
+1. Changes are made in this repository.
+2. CI validates Python, shell syntax, update safety and credential patterns.
+3. The `stable` branch is the deployment channel for the phone.
+4. The phone updater stages the exact stable commit, validates it, backs up the current managed files, restarts the bridge, verifies health, and rolls back on failure.
+5. Runtime fixes made directly on the phone must still be synchronized back to GitHub.
+6. Secrets, tokens, cookies, browser profiles, logs, tunnel binaries and generated state are never committed.
 
 ## Operating principles
 
@@ -66,6 +67,45 @@ gpt
 
 The `gpt` command should establish/re-establish the bridge connection without requiring the user to remember internal start/status/tunnel commands.
 
+## Automatic updates
+
+TermuxBridge uses a conservative stable-channel updater.
+
+```text
+GitHub stable commit
+      ↓
+download to staging
+      ↓
+Python + Bash validation
+      ↓
+backup current managed runtime
+      ↓
+stop bridge
+      ↓
+activate new runtime
+      ↓
+start + health/status verification
+      ↓
+success, or automatic rollback
+```
+
+The updater manages only the tracked bridge runtime files. It never replaces `secrets/`, authenticated browser profiles, logs, PID files, local jobs, or the locally downloaded tunnel binaries.
+
+The phone uses Android's Termux:API job scheduler with a persistent daily job. Manage it with:
+
+```bash
+termuxbridgectl auto-update-status
+termuxbridgectl auto-update-enable
+termuxbridgectl auto-update-disable
+```
+
+Manual checks and updates:
+
+```bash
+termuxbridgectl check
+termuxbridgectl update
+```
+
 ## Security
 
 Never commit:
@@ -81,8 +121,6 @@ Never commit:
 
 See `SECURITY.md` and `.gitignore`.
 
-## Current migration state
+## Current deployment state
 
-The repository has now been initialized as the canonical project location.
-
-The next required migration step is an **exact, secret-filtered snapshot of the working phone directory** `~/termux-mcp-bridge`. Runtime files should be imported from the device rather than recreated from historical chat descriptions.
+The canonical runtime snapshot has been imported from the working phone without secrets or generated state. GitHub is now the source of truth for the managed TermuxBridge runtime. The current phone deployment should follow the verified `stable` branch through the transactional updater.
