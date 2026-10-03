@@ -49,6 +49,8 @@ jobs:
           grep -Fq 'X-Bridge-Token' runtime/supervisor.py
           grep -Fq 'X-Bridge-Backend-Token' runtime/supervisor.py
           grep -Fq '_backend_authorized' runtime/bridge_server.py
+          grep -Fq 'if self.path == "/healthz"' runtime/supervisor.py
+          grep -Fq 'raw.githubusercontent.com/ZTD38F/TermuxBridge/$SOURCE_COMMIT/runtime/supervisor.py' runtime/start_bridge.sh
 
           if grep -Eq '\$TMP/source/(runtime/)?(secrets|logs|bin|\.bridge-backup)/' update_termux.sh; then
             echo "Updater must not copy secret/log/binary/generated state from GitHub staging"
