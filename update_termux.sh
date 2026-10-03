@@ -240,8 +240,23 @@ ensure_seamless_topology() {
 recover_unfinished
 
 CURRENT="$(cat "$STATE" 2>/dev/null || true)"
-TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$CHANNEL" |
-  python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+TARGET_TAG=""
+if [[ "$CHANNEL" == "stable" ]]; then
+  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
+  if [[ -n "$RELEASE_JSON" ]]; then
+    read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
+    if [[ -n "$TARGET_TAG" && "$RELEASE_DRAFT" == false && "$RELEASE_PRERELEASE" == false ]]; then
+      TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
+        python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+    else
+      TARGET_TAG=""
+    fi
+  fi
+fi
+if [[ -z "${TARGET:-}" ]]; then
+  TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$CHANNEL" |
+    python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+fi
 [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { log "ERROR invalid target SHA"; exit 1; }
 if [[ "$CURRENT" == "$TARGET" && "${1:-}" != "--force" ]]; then log "ok already current $CURRENT"; exit 0; fi
 
@@ -250,8 +265,20 @@ mkdir -p "$TMP/source"
 journal CHECKING
 log "runtime update $CURRENT -> $TARGET"
 
-curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "https://github.com/$REPO/archive/$TARGET.tar.gz" -o "$TMP/source.tar.gz"
-tar -xzf "$TMP/source.tar.gz" -C "$TMP/source" --strip-components=1
+if [[ -n "$TARGET_TAG" ]]; then
+  ASSET="TermuxBridge-$TARGET_TAG.tar.gz"
+  BASE="https://github.com/$REPO/releases/download/$TARGET_TAG"
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "$BASE/$ASSET" -o "$TMP/source.tar.gz"
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "$BASE/SHA256SUMS.txt" -o "$TMP/source-SHA256SUMS.txt"
+  grep -E "[[:space:]]${ASSET//./\\.}$" "$TMP/source-SHA256SUMS.txt" >"$TMP/source.sha256" ||
+    { journal FAILED_PRE_SWITCH "release checksum missing"; exit 1; }
+  (cd "$TMP" && sha256sum -c source.sha256) >>"$LOG" 2>&1 ||
+    { journal FAILED_PRE_SWITCH "release checksum mismatch"; exit 1; }
+  tar -xzf "$TMP/source.tar.gz" -C "$TMP/source"
+else
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "https://github.com/$REPO/archive/$TARGET.tar.gz" -o "$TMP/source.tar.gz"
+  tar -xzf "$TMP/source.tar.gz" -C "$TMP/source" --strip-components=1
+fi
 journal DOWNLOADED
 
 for file in "${RUNTIME_FILES[@]}" "${MANAGEMENT_FILES[@]}"; do
