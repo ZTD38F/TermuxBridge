@@ -13,14 +13,14 @@ jobs:
   runtime:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
 
       - name: Compile canonical runtime
         run: |
-          python -m py_compile             runtime/bridge_server.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py
+          python -m py_compile             runtime/bridge_server.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py             runtime/supervisor.py
 
       - name: Parse shell scripts
         run: |
@@ -41,6 +41,15 @@ jobs:
           grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' TUNNEL_CLIENT_VERSION
           grep -Fq 'SHA256SUMS.txt' update_termux.sh
           grep -Fq 'tunnel-client-runtime' update_termux.sh
+          grep -Fq 'CANDIDATE_HEALTHY' update_termux.sh
+          grep -Fq 'SWITCHED' update_termux.sh
+          grep -Fq 'DRAINING_OLD' update_termux.sh
+          grep -Fq 'FAILED_ROLLED_BACK' update_termux.sh
+          grep -Fq 'update_supervisor' update_termux.sh
+          grep -Fq 'TRANSPORT_UPDATE' update_termux.sh
+          grep -Fq 'X-Bridge-Token' runtime/supervisor.py
+          grep -Fq 'X-Bridge-Backend-Token' runtime/supervisor.py
+          grep -Fq '_backend_authorized' runtime/bridge_server.py
 
           if grep -Eq '\$TMP/source/(runtime/)?(secrets|logs|bin|\.bridge-backup)/' update_termux.sh; then
             echo "Updater must not copy secret/log/binary/generated state from GitHub staging"
@@ -53,6 +62,16 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Reject stop/start runtime update regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path("update_termux.sh").read_text()
+          normal=text[text.index("CANDIDATE="):text.index("# Transport updates")]
+          assert 'stop_bridge.sh' not in normal, "ordinary runtime update must not stop the tunnel"
+          print("seamless runtime invariant passed")
+          PY
 
       - name: Secret-pattern guard
         shell: bash
