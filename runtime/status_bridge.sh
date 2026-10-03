@@ -1,56 +1,46 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
 
-BRIDGE_DIR="$HOME/termux-mcp-bridge"
+BRIDGE_DIR="${TERMUXBRIDGE_ROOT:-$HOME/termux-mcp-bridge}"
 CLIENT="$BRIDGE_DIR/bin/tunnel-client-runtime"
 SHOW_LOGS=0
-if [[ "${1:-}" == "--logs" ]]; then
-  SHOW_LOGS=1
-fi
+[[ "${1:-}" == "--logs" ]] && SHOW_LOGS=1
 
-if [[ ! -x "$CLIENT" ]]; then
-  echo "NOT INSTALLED: tunnel-client-runtime is missing"
-  exit 1
-fi
+pid_line() {
+  local label="$1" file="$2"
+  if [[ -s "$file" ]] && kill -0 "$(<"$file")" 2>/dev/null; then
+    echo "$label RUNNING PID $(<"$file")"
+  else
+    echo "$label STOPPED"
+  fi
+}
 
-if [[ -f "$BRIDGE_DIR/bridge.pid" ]] && kill -0 "$(cat "$BRIDGE_DIR/bridge.pid")" 2>/dev/null; then
-  echo "TUNNEL RUNNING PID $(cat "$BRIDGE_DIR/bridge.pid")"
-else
-  echo "TUNNEL STOPPED"
-fi
+[[ -x "$CLIENT" ]] || { echo "NOT INSTALLED: tunnel-client-runtime is missing"; exit 1; }
+pid_line "TUNNEL" "$BRIDGE_DIR/bridge.pid"
+pid_line "SUPERVISOR" "$BRIDGE_DIR/supervisor.pid"
+pid_line "MCP" "$BRIDGE_DIR/server.pid"
+pid_line "DNS PROXY" "$BRIDGE_DIR/proxy.pid"
 
-if [[ -f "$BRIDGE_DIR/server.pid" ]] && kill -0 "$(cat "$BRIDGE_DIR/server.pid")" 2>/dev/null; then
-  echo "MCP RUNNING PID $(cat "$BRIDGE_DIR/server.pid")"
-else
-  echo "MCP STOPPED"
-fi
-
-if [[ -f "$BRIDGE_DIR/proxy.pid" ]] && kill -0 "$(cat "$BRIDGE_DIR/proxy.pid")" 2>/dev/null; then
-  echo "DNS PROXY RUNNING PID $(cat "$BRIDGE_DIR/proxy.pid")"
-else
-  echo "DNS PROXY STOPPED"
-fi
-
-python - <<'PY'
-import socket
-try:
-    with socket.create_connection(('127.0.0.1', 8877), timeout=2):
-        pass
-    print('DNS PROXY HEALTH reachable')
-except Exception as e:
-    print('DNS PROXY HEALTH unavailable:', type(e).__name__)
+if [[ -s "$BRIDGE_DIR/state/route.json" ]]; then
+  python - "$BRIDGE_DIR/state/route.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+print("ACTIVE GENERATION", d.get("generation","unknown"))
+print("ACTIVE BACKEND PORT", d.get("port","unknown"))
 PY
+fi
 
-python - <<'PY'
-import json, urllib.request
-try:
-    print('MCP HEALTH', json.load(urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=2)))
-except Exception as e:
-    print('MCP HEALTH unavailable:', type(e).__name__)
+if [[ -s "$BRIDGE_DIR/state/update.json" ]]; then
+  python - "$BRIDGE_DIR/state/update.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))
+for k in ("transaction_id","update_kind","phase","current_generation","candidate_generation","previous_generation","failure_reason","rollback_reason","updated_at"):
+    if d.get(k) not in (None,""):
+        print("UPDATE", k, d[k])
 PY
+fi
 
-if [[ "$SHOW_LOGS" -eq 1 ]]; then
-  echo "== redacted tunnel log =="
-  tail -n 40 "$BRIDGE_DIR/logs/tunnel.log" 2>/dev/null \
-    | sed -E 's/tunnel_[A-Za-z0-9_-]+/tunnel_REDACTED/g; s/(api[_ -]?key[=: ]+)[^ ]+/\1REDACTED/Ig'
+if ((SHOW_LOGS)); then
+  echo "== update log =="
+  tail -n 80 "$BRIDGE_DIR/logs/update.log" 2>/dev/null || true
 fi
