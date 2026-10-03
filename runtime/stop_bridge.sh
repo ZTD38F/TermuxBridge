@@ -1,9 +1,26 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -euo pipefail
-PIDFILE="$HOME/termux-mcp-bridge/bridge.pid"
-SERVER_PIDFILE="$HOME/termux-mcp-bridge/server.pid"
-PROXY_PIDFILE="$HOME/termux-mcp-bridge/proxy.pid"
-if [[ -f "$PIDFILE" ]]; then PID="$(<"$PIDFILE")"; if kill -0 "$PID" 2>/dev/null; then kill "$PID"; fi; rm -f "$PIDFILE"; fi
-if [[ -f "$SERVER_PIDFILE" ]]; then PID="$(<"$SERVER_PIDFILE")"; if kill -0 "$PID" 2>/dev/null; then kill "$PID"; fi; rm -f "$SERVER_PIDFILE"; fi
-if [[ -f "$PROXY_PIDFILE" ]]; then PID="$(<"$PROXY_PIDFILE")"; if kill -0 "$PID" 2>/dev/null; then kill "$PID"; fi; rm -f "$PROXY_PIDFILE"; fi
+ROOT="${TERMUXBRIDGE_ROOT:-$HOME/termux-mcp-bridge}"
+
+stop_pidfile() {
+  local file="$1"
+  if [[ -s "$file" ]]; then
+    local pid
+    pid="$(<"$file")"
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      for _ in {1..20}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+      done
+    fi
+    rm -f "$file"
+  fi
+}
+
+# Manual/full shutdown only. Seamless runtime updates do not call this script.
+stop_pidfile "$ROOT/bridge.pid"
+stop_pidfile "$ROOT/supervisor.pid"
+stop_pidfile "$ROOT/server.pid"
+stop_pidfile "$ROOT/proxy.pid"
 echo "Stopped"

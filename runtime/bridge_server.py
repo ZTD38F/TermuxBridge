@@ -2,7 +2,10 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
+BRIDGE_VERSION = "1.1.0"
+
 import hashlib
+import hmac
 import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -19,6 +22,22 @@ JOBS = Path(os.environ.get("TERMUX_BRIDGE_JOBS", ROOT / ".termux-mcp-bridge" / "
 MAX_READ = 512_000
 MAX_OUTPUT = 256_000
 COMMAND_MODE = os.environ.get("TERMUX_BRIDGE_COMMAND_MODE", "open").lower()
+BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path.home() / "termux-mcp-bridge" / "secrets" / "backend_token")).resolve()
+
+
+def _backend_token() -> str:
+    value = BACKEND_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    if len(value) < 32:
+        raise RuntimeError("invalid backend authentication secret")
+    return value
+
+
+def _backend_authorized(headers) -> bool:
+    try:
+        return hmac.compare_digest(_backend_token(), headers.get("X-Bridge-Backend-Token", ""))
+    except Exception:
+        return False
+
 
 
 def inside(path: str | Path) -> Path:
@@ -86,7 +105,7 @@ if PHONE_SERVER.is_file():
             })
 
 
-GOOGLE_SERVER = ROOT / "termux-mcp-bridge" / "google_bridge_tools.py"
+GOOGLE_SERVER = Path(__file__).resolve().with_name("google_bridge_tools.py")
 GOOGLE_MODULE = None
 GOOGLE_TOOLS = {}
 if GOOGLE_SERVER.is_file():
@@ -231,7 +250,7 @@ def respond(msg):
     if mid is None: return None
     method = msg.get("method")
     if method == "initialize":
-        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "TermuxBridge", "version": "1.0.0"}, "instructions": "Command execution is open and runs with the ordinary Termux app UID (no root assumed). File helper tools remain scoped to Termux/shared storage. Never request or expose secrets. Confirm consequential writes or destructive actions."}
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "TermuxBridge", "version": BRIDGE_VERSION}, "instructions": "Command execution is open and runs with the ordinary Termux app UID (no root assumed). File helper tools remain scoped to Termux/shared storage. Never request or expose secrets. Confirm consequential writes or destructive actions."}
     elif method == "ping": result = {}
     elif method == "tools/list": result = {"tools": TOOLS}
     elif method == "tools/call":
@@ -242,7 +261,7 @@ def respond(msg):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "TermuxSafeBridge/1.0.2"
+    server_version = f"TermuxSafeBridge/{BRIDGE_VERSION}"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.log_date_time_string(), fmt % args))
@@ -255,11 +274,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers(); self.wfile.write(data)
 
+    def _auth_or_reject(self):
+        if _backend_authorized(self.headers):
+            return True
+        self.send_json(403, {"error": "forbidden"})
+        return False
+
     def do_GET(self):
-        if self.path == "/healthz": self.send_json(200, {"ok": True})
+        if not self._auth_or_reject(): return
+        if self.path == "/healthz": self.send_json(200, {"ok": True, "pid": os.getpid()})
         else: self.send_json(405, {"error": "POST JSON-RPC to /mcp"})
 
     def do_POST(self):
+        if not self._auth_or_reject(): return
         if self.path != "/mcp": self.send_json(404, {"error": "not found"}); return
         try:
             size = int(self.headers.get("Content-Length", "0"))
