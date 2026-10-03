@@ -8,13 +8,13 @@ case "${1:-check}" in
   check)
     "$ROOT/status_bridge.sh"
     ;;
-  status)
+  status|update-status)
     printf 'TermuxBridge\n'
     printf '  source_commit: %s\n' "$(cat "$ROOT/source_commit" 2>/dev/null || echo unknown)"
     "$ROOT/status_bridge.sh"
     ;;
-  update)
-    shift
+  update|update-now)
+    shift || true
     exec "$ROOT/update_termux.sh" --force "$@"
     ;;
   restart)
@@ -25,14 +25,7 @@ case "${1:-check}" in
     tail -n "${2:-100}" "$ROOT/logs/update.log" 2>/dev/null || true
     ;;
   auto-update-enable)
-    termux-job-scheduler \
-      --script "$ROOT/update_termux.sh" \
-      --job-id "$JOB_ID" \
-      --period-ms 86400000 \
-      --network any \
-      --battery-not-low true \
-      --storage-not-low true \
-      --persisted true >/dev/null
+    termux-job-scheduler       --script "$ROOT/update_termux.sh"       --job-id "$JOB_ID"       --period-ms 86400000       --network any       --battery-not-low true       --storage-not-low true       --persisted true >/dev/null
     echo "TermuxBridge automatic updates enabled."
     ;;
   auto-update-disable)
@@ -43,7 +36,7 @@ case "${1:-check}" in
     termux-job-scheduler --pending
     ;;
   *)
-    echo "Usage: termuxbridgectl {check|status|update|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status}" >&2
+    echo "Usage: termuxbridgectl {check|status|update-status|update|update-now|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status}" >&2
     exit 2
     ;;
 esac
