@@ -38,6 +38,9 @@ jobs:
           grep -Fq 'termux-job-scheduler' termuxbridgectl
           grep -Fq -- '--persisted true' termuxbridgectl
           grep -Fq 'TermuxBridge' runtime/bridge_server.py
+          grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' TUNNEL_CLIENT_VERSION
+          grep -Fq 'SHA256SUMS.txt' update_termux.sh
+          grep -Fq 'tunnel-client-runtime' update_termux.sh
 
           if grep -Eq '\$TMP/source/(runtime/)?(secrets|logs|bin|\.bridge-backup)/' update_termux.sh; then
             echo "Updater must not copy secret/log/binary/generated state from GitHub staging"
