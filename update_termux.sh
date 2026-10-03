@@ -302,17 +302,77 @@ journal COMMITTED
 # extra old backend; the next update/start can clean it without routing to it.
 if pid_alive "$PREVIOUS_PID" && [[ "$PREVIOUS_PID" != "$CANDIDATE_PID" ]]; then kill "$PREVIOUS_PID" 2>/dev/null || true; fi
 
-# Transport updates are intentionally classified separately. Ordinary runtime
-# updates never replace or restart the tunnel-client.
+# Transport updates are a separate blue/green transaction. Both transport
+# generations target the same authenticated supervisor, so application state is
+# not split across two runtimes.
 PINNED_TUNNEL="$(tr -d '[:space:]' <"$TMP/source/TUNNEL_CLIENT_VERSION")"
+[[ "$PINNED_TUNNEL" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { log "ERROR invalid tunnel pin"; exit 1; }
 CURRENT_TUNNEL="$("$ROOT/bin/tunnel-client-runtime" --version 2>/dev/null | awk '{print "v"$1; exit}' || true)"
-if [[ -n "$PINNED_TUNNEL" && "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
-  log "transport update available $CURRENT_TUNNEL -> $PINNED_TUNNEL; runtime committed without transport restart"
-  python - "$JOURNAL" "$PINNED_TUNNEL" <<'PY'
-import json,os,pathlib,sys,time
-p=pathlib.Path(sys.argv[1]); d=json.loads(p.read_text()); d["transport_update_pending"]=sys.argv[2]; d["updated_at"]=int(time.time())
-tmp=p.with_suffix(".tmp"); tmp.write_text(json.dumps(d,separators=(",",":"))+"\n"); os.replace(tmp,p)
-PY
+if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
+  log "TRANSPORT_UPDATE $CURRENT_TUNNEL -> $PINNED_TUNNEL"
+  ARCH="$(uname -m)"
+  [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]] || { log "ERROR unsupported transport arch $ARCH"; exit 1; }
+  ASSET="tunnel-client-runtime-$PINNED_TUNNEL-linux-arm64.zip"
+  BASE="https://github.com/openai/tunnel-client/releases/download/$PINNED_TUNNEL"
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "$BASE/$ASSET" -o "$TMP/$ASSET"
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "$BASE/SHA256SUMS.txt" -o "$TMP/transport-SHA256SUMS.txt"
+  grep -E "[[:space:]]${ASSET//./\\.}$" "$TMP/transport-SHA256SUMS.txt" >"$TMP/transport.sha256"
+  (cd "$TMP" && sha256sum -c transport.sha256) >>"$LOG" 2>&1
+  mkdir -p "$TMP/transport"
+  unzip -q "$TMP/$ASSET" -d "$TMP/transport"
+  NEW_TRANSPORT="$TMP/transport/tunnel-client-runtime"
+  [[ -x "$NEW_TRANSPORT" ]] || chmod 700 "$NEW_TRANSPORT"
+  "$NEW_TRANSPORT" --version >>"$LOG" 2>&1
+
+  VERSIONED="$ROOT/bin/tunnel-client-runtime-$PINNED_TUNNEL"
+  install -m 700 "$NEW_TRANSPORT" "$VERSIONED"
+  OLD_PID="$(cat "$ROOT/bridge.pid" 2>/dev/null || true)"
+  TUNNEL_ID="$(cat "$TUNNEL_FILE")"
+  export CONTROL_PLANE_TUNNEL_ID="$TUNNEL_ID"
+  export HTTPS_PROXY="http://127.0.0.1:8877"
+  export https_proxy="$HTTPS_PROXY"
+  export CA_BUNDLE="$PREFIX/etc/tls/cert.pem"
+  export SSL_CERT_FILE="$CA_BUNDLE"
+  TRANSPORT_LOG="$ROOT/logs/tunnel-$PINNED_TUNNEL.log"
+
+  nohup "$VERSIONED" run \
+    --control-plane.api-key "file:$KEYFILE" \
+    --mcp.server-url http://127.0.0.1:8765/mcp \
+    --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
+    >"$TRANSPORT_LOG" 2>&1 &
+  NEW_TUNNEL_PID=$!
+  sleep 5
+  if ! pid_alive "$NEW_TUNNEL_PID"; then
+    log "ERROR transport candidate exited before handoff"
+    rm -f "$VERSIONED"
+    exit 1
+  fi
+
+  # The candidate is already polling the same tunnel against the same router.
+  # Retire the previous transport only after candidate survival is proven.
+  if pid_alive "$OLD_PID"; then kill "$OLD_PID" 2>/dev/null || true; fi
+  sleep 3
+  if ! pid_alive "$NEW_TUNNEL_PID"; then
+    log "ERROR transport candidate failed after handoff; restoring previous transport"
+    nohup "$ROOT/bin/tunnel-client-runtime" run \
+      --control-plane.api-key "file:$KEYFILE" \
+      --mcp.server-url http://127.0.0.1:8765/mcp \
+      --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
+      >"$ROOT/logs/tunnel.log" 2>&1 &
+    echo $! >"$ROOT/bridge.pid"
+    rm -f "$VERSIONED"
+    exit 1
+  fi
+
+  # Preserve the old executable as an immediate rollback artifact before
+  # replacing the stable path with a versioned symlink.
+  if [[ -n "$CURRENT_TUNNEL" && ! -e "$ROOT/bin/tunnel-client-runtime-$CURRENT_TUNNEL" ]]; then
+    cp -a "$ROOT/bin/tunnel-client-runtime" "$ROOT/bin/tunnel-client-runtime-$CURRENT_TUNNEL" 2>/dev/null || true
+  fi
+  rm -f "$ROOT/bin/tunnel-client-runtime"
+  ln -s "$(basename "$VERSIONED")" "$ROOT/bin/tunnel-client-runtime"
+  printf '%s\n' "$NEW_TUNNEL_PID" >"$ROOT/bridge.pid"
+  log "TRANSPORT_UPDATE committed $PINNED_TUNNEL pid=$NEW_TUNNEL_PID"
 fi
 
 find "$RELEASES" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' 2>/dev/null |
