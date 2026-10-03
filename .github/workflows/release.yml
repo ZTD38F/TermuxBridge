@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ["v*.*.*"]
+    branches: [stable]
   workflow_dispatch:
 
 permissions:
@@ -20,23 +20,37 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
+      - name: Resolve release version
+        run: |
+          VERSION="$(python - <<'PY'
+          import ast
+          tree=ast.parse(open("runtime/bridge_server.py").read())
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(getattr(t,"id",None)=="BRIDGE_VERSION" for t in node.targets):
+                  print(ast.literal_eval(node.value)); break
+          else:
+              raise SystemExit("BRIDGE_VERSION not found")
+          PY
+          )"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
       - name: Validate runtime
         run: |
           python -m py_compile runtime/*.py
           bash -n runtime/start_bridge.sh runtime/status_bridge.sh runtime/stop_bridge.sh update_termux.sh termuxbridgectl
       - name: Build release artifacts
         run: |
-          TAG="${GITHUB_REF_NAME:-manual-$GITHUB_SHA}"
           tar -czf "TermuxBridge-$TAG.tar.gz" \
             runtime update_termux.sh termuxbridgectl TUNNEL_CLIENT_VERSION README.md SECURITY.md
           sha256sum "TermuxBridge-$TAG.tar.gz" > SHA256SUMS.txt
           python - <<'PY'
           import json, os
-          tag=os.environ.get("GITHUB_REF_NAME") or ("manual-"+os.environ["GITHUB_SHA"])
           data={
             "schema_version":1,
             "bridge":"TermuxBridge",
-            "version":tag,
+            "version":os.environ["VERSION"],
+            "tag":os.environ["TAG"],
             "source_commit":os.environ["GITHUB_SHA"],
             "update_kind":"runtime",
             "supervisor_protocol":1,
@@ -52,13 +66,18 @@ jobs:
             TermuxBridge-*.tar.gz
             SHA256SUMS.txt
             bridge-release.json
-      - name: Publish release
-        if: github.ref_type == 'tag'
+      - name: Publish stable release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            TermuxBridge-*.tar.gz SHA256SUMS.txt bridge-release.json \
-            --target "${{ github.sha }}" \
-            --title "TermuxBridge ${{ github.ref_name }}" \
-            --generate-notes
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+            if [[ "$target" != "${{ github.sha }}" && "$target" != "stable" ]]; then
+              echo "Release $TAG exists for a different target: $target" >&2
+              exit 1
+            fi
+            echo "Release $TAG already exists."
+          else
+            gh release create "$TAG" TermuxBridge-*.tar.gz SHA256SUMS.txt bridge-release.json \
+              --target "${{ github.sha }}" --title "TermuxBridge $TAG" --generate-notes
+          fi
