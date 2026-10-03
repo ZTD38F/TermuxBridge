@@ -39,10 +39,17 @@ jobs:
           grep -Fq -- '--persisted true' termuxbridgectl
           grep -Fq 'TermuxBridge' runtime/bridge_server.py
 
-          if grep -Eq 'secrets/|logs/|\.bridge-backup/|bin/tunnel-client' update_termux.sh; then
-            echo "Updater must not source managed runtime from secret/log/binary state"
+          if grep -Eq '\$TMP/source/(runtime/)?(secrets|logs|bin|\.bridge-backup)/' update_termux.sh; then
+            echo "Updater must not copy secret/log/binary/generated state from GitHub staging"
             exit 1
           fi
+
+          for forbidden in secrets logs bin .bridge-backup jobs; do
+            if grep -Eq "^[[:space:]]*$forbidden([[:space:]]|$)" update_termux.sh; then
+              echo "Forbidden directory appears in MANAGED list: $forbidden"
+              exit 1
+            fi
+          done
 
       - name: Secret-pattern guard
         shell: bash
