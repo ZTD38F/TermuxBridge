@@ -268,13 +268,13 @@ log "runtime update $CURRENT -> $TARGET"
 if [[ -n "$TARGET_TAG" ]]; then
   ASSET="TermuxBridge-$TARGET_TAG.tar.gz"
   BASE="https://github.com/$REPO/releases/download/$TARGET_TAG"
-  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "$BASE/$ASSET" -o "$TMP/source.tar.gz"
+  curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "$BASE/$ASSET" -o "$TMP/$ASSET"
   curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "$BASE/SHA256SUMS.txt" -o "$TMP/source-SHA256SUMS.txt"
   grep -E "[[:space:]]${ASSET//./\\.}$" "$TMP/source-SHA256SUMS.txt" >"$TMP/source.sha256" ||
     { journal FAILED_PRE_SWITCH "release checksum missing"; exit 1; }
   (cd "$TMP" && sha256sum -c source.sha256) >>"$LOG" 2>&1 ||
     { journal FAILED_PRE_SWITCH "release checksum mismatch"; exit 1; }
-  tar -xzf "$TMP/source.tar.gz" -C "$TMP/source"
+  tar -xzf "$TMP/$ASSET" -C "$TMP/source"
 else
   curl -fL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 180 "https://github.com/$REPO/archive/$TARGET.tar.gz" -o "$TMP/source.tar.gz"
   tar -xzf "$TMP/source.tar.gz" -C "$TMP/source" --strip-components=1
