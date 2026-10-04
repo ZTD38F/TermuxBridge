@@ -76,6 +76,20 @@ jobs:
           print("release checksum filename invariant passed")
           PY
 
+      - name: Verify self-hosted update cannot deadlock on itself
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text=Path("update_termux.sh").read_text()
+          assert 'SELF_HOSTED_UPDATE=0' in text
+          assert 'DRAIN_FLOOR="$SELF_HOSTED_UPDATE"' in text
+          assert '[[ "$OLD_INFLIGHT" -le "$DRAIN_FLOOR" ]]' in text
+          assert 'route and previous backend pointer restored' in text
+          assert 'deferred old backend retirement scheduled' in text
+          assert 'deferred old backend retired' in text
+          print("self-hosted update drain invariant passed")
+          PY
+
       - name: Reject stop/start runtime update regression
         run: |
           python - <<'PY'
