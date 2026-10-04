@@ -64,6 +64,18 @@ jobs:
             fi
           done
 
+      - name: Verify release checksum uses downloaded asset filename
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("update_termux.sh").read_text()
+          assert '-o "$TMP/$ASSET"' in text
+          assert 'sha256sum -c source.sha256' in text
+          assert 'tar -xzf "$TMP/$ASSET" -C "$TMP/source"' in text
+          assert '-o "$TMP/source.tar.gz"' not in text[text.index('if [[ -n "$TARGET_TAG" ]]'):text.index('else\n  curl', text.index('if [[ -n "$TARGET_TAG" ]]'))]
+          print("release checksum filename invariant passed")
+          PY
+
       - name: Reject stop/start runtime update regression
         run: |
           python - <<'PY'
