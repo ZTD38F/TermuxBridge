@@ -25,6 +25,7 @@ PREVIOUS_GENERATION=""
 PREVIOUS_PORT=""
 CANDIDATE_PORT=""
 SWITCHED=0
+SELF_HOSTED_UPDATE=0
 
 RUNTIME_FILES=(
   bridge_server.py
@@ -307,6 +308,28 @@ d=json.load(open(sys.argv[1])); print(d["generation"], int(d["port"]))
 PY
 )
 PREVIOUS_PID="$(cat "$ROOT/server.pid" 2>/dev/null || true)"
+# If this updater was invoked through the currently active MCP backend (for
+# example via termuxbridgectl update-now called from ChatGPT), that request
+# itself keeps one in-flight request on the old generation until this process
+# exits. Detect that ancestry so drain/retirement cannot deadlock on itself.
+if [[ "$PREVIOUS_PID" =~ ^[0-9]+$ ]] && python - "$PREVIOUS_PID" <<'PY'
+import os,sys
+target=int(sys.argv[1]); pid=os.getppid(); seen=set()
+while pid > 1 and pid not in seen:
+    if pid == target:
+        raise SystemExit(0)
+    seen.add(pid)
+    try:
+        with open(f"/proc/{pid}/stat","r",encoding="utf-8") as f:
+            pid=int(f.read().split()[3])
+    except Exception:
+        break
+raise SystemExit(1)
+PY
+then
+  SELF_HOSTED_UPDATE=1
+  log "self-hosted MCP update detected; allowing own in-flight request during drain"
+fi
 if [[ "$PREVIOUS_PORT" == 18771 ]]; then CANDIDATE_PORT=18772; else CANDIDATE_PORT=18771; fi
 journal CANDIDATE_STARTING
 
@@ -331,16 +354,18 @@ mcp_contract "http://127.0.0.1:8765/mcp" "X-Bridge-Token" "$ROUTER_TOKEN_FILE" >
 compare_tool_contracts "$TMP/current-tools.json" "$TMP/switched-tools.json"
 journal DRAINING_OLD
 
+DRAIN_FLOOR="$SELF_HOSTED_UPDATE"
 for _ in {1..120}; do
   OLD_INFLIGHT="$(router_call /__bridge/status | python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("inflight",{}).get(sys.argv[1],0))' "$PREVIOUS_GENERATION")"
-  [[ "$OLD_INFLIGHT" == 0 ]] && break
+  [[ "$OLD_INFLIGHT" -le "$DRAIN_FLOOR" ]] && break
   sleep 0.5
 done
-if [[ "${OLD_INFLIGHT:-1}" != 0 ]]; then
+if [[ "${OLD_INFLIGHT:-1}" -gt "$DRAIN_FLOOR" ]]; then
   write_route "$PREVIOUS_GENERATION" "$PREVIOUS_PORT"
   SWITCHED=0
   kill "$CANDIDATE_PID" 2>/dev/null || true
-  journal FAILED_ROLLED_BACK "drain timeout" "route restored before candidate retirement"
+  if pid_alive "$PREVIOUS_PID"; then printf '%s\n' "$PREVIOUS_PID" >"$ROOT/server.pid"; fi
+  journal FAILED_ROLLED_BACK "drain timeout" "route and previous backend pointer restored"
   exit 1
 fi
 
@@ -359,9 +384,39 @@ printf '%s\n' "$CANDIDATE_PID" >"$ROOT/server.pid"
 install_management_from_stage "$TMP/source"
 journal COMMITTED
 
-# Old backend retirement happens after commit. A crash here leaves a harmless
-# extra old backend; the next update/start can clean it without routing to it.
-if pid_alive "$PREVIOUS_PID" && [[ "$PREVIOUS_PID" != "$CANDIDATE_PID" ]]; then kill "$PREVIOUS_PID" 2>/dev/null || true; fi
+# Old backend retirement happens after commit. A self-hosted MCP update must
+# return its response through the previous backend, so retire that backend only
+# after its in-flight count reaches zero. Ordinary timer/local-shell updates
+# still retire synchronously.
+if pid_alive "$PREVIOUS_PID" && [[ "$PREVIOUS_PID" != "$CANDIDATE_PID" ]]; then
+  if [[ "$SELF_HOSTED_UPDATE" == 1 ]]; then
+    nohup python - "$PREVIOUS_GENERATION" "$PREVIOUS_PID" "$ROUTER_TOKEN_FILE" "$LOG" <<'PY' >/dev/null 2>&1 &
+import json,os,pathlib,signal,sys,time,urllib.request
+generation,pid_s,token_path,log_path=sys.argv[1:]
+pid=int(pid_s)
+token=pathlib.Path(token_path).read_text().strip()
+for _ in range(120):
+    try:
+        req=urllib.request.Request("http://127.0.0.1:8765/__bridge/status",headers={"X-Bridge-Token":token})
+        with urllib.request.urlopen(req,timeout=3) as r:
+            inflight=int(json.load(r).get("inflight",{}).get(generation,0))
+        if inflight == 0:
+            try: os.kill(pid,signal.SIGTERM)
+            except ProcessLookupError: pass
+            with open(log_path,"a",encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())} deferred old backend retired pid={pid}\n")
+            raise SystemExit(0)
+    except Exception:
+        pass
+    time.sleep(0.5)
+with open(log_path,"a",encoding="utf-8") as f:
+    f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())} WARNING deferred old backend retirement timed out pid={pid}\n")
+PY
+    log "deferred old backend retirement scheduled pid=$PREVIOUS_PID"
+  else
+    kill "$PREVIOUS_PID" 2>/dev/null || true
+  fi
+fi
 update_supervisor "$TMP/source/runtime/supervisor.py"
 
 # Transport updates are a separate blue/green transaction. Both transport
