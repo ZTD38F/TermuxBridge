@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+    PIL_AVAILABLE = True
+except ImportError:
+    Image = ImageDraw = ImageFont = ImageOps = None
+    UnidentifiedImageError = OSError
+    PIL_AVAILABLE = False
 
 SHARED_ROOT = Path("/storage/emulated/0").resolve()
 STATE_DIR = Path.home() / ".termux-mcp-bridge"
@@ -195,6 +201,7 @@ def gallery_status(_: dict[str, Any]) -> dict[str, Any]:
         "source": str(SHARED_ROOT),
         "database": str(DB_PATH),
         "read_only_photos": True,
+        "pillow_available": PIL_AVAILABLE,
     }
 
 
@@ -322,7 +329,13 @@ def _row_by_id(image_id: int) -> sqlite3.Row:
     return row
 
 
+def _require_pillow() -> None:
+    if not PIL_AVAILABLE:
+        raise RuntimeError("Pillow is required for gallery image rendering; metadata browsing still works")
+
+
 def _render_jpeg(path: Path, max_edge: int, quality: int) -> tuple[bytes, int, int]:
+    _require_pillow()
     try:
         with Image.open(path) as source:
             source.seek(0)
@@ -399,6 +412,7 @@ def gallery_get_images(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def gallery_contact_sheet(arguments: dict[str, Any]) -> dict[str, Any]:
+    _require_pillow()
     args = dict(arguments)
     args["limit"] = max(1, min(int(arguments.get("limit", 36)), 64))
     rows, total = _query_rows(args, max_limit=64)
