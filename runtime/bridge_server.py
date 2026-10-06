@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.1.3"
+BRIDGE_VERSION = "1.2.0"
 
 import hashlib
 import hmac
@@ -128,6 +128,29 @@ if GOOGLE_SERVER.is_file():
             })
 
 
+
+GALLERY_SERVER = Path(__file__).resolve().with_name("gallery_bridge_tools.py")
+GALLERY_MODULE = None
+GALLERY_TOOLS = {}
+if GALLERY_SERVER.is_file():
+    _gallery_spec = importlib.util.spec_from_file_location("gallery_bridge_tools", GALLERY_SERVER)
+    if _gallery_spec and _gallery_spec.loader:
+        GALLERY_MODULE = importlib.util.module_from_spec(_gallery_spec)
+        _gallery_spec.loader.exec_module(GALLERY_MODULE)
+        GALLERY_TOOLS = GALLERY_MODULE.TOOLS
+        for _name, (_input_schema, _handler) in GALLERY_TOOLS.items():
+            TOOLS.append({
+                "name": _name,
+                "title": _name.replace("_", " ").title(),
+                "description": GALLERY_MODULE.DESCRIPTIONS[_name],
+                "inputSchema": _input_schema,
+                "annotations": {
+                    "readOnlyHint": _name in GALLERY_MODULE.READ_ONLY,
+                    "destructiveHint": False,
+                    "openWorldHint": False,
+                },
+            })
+
 def checked_argv(argv):
     """Open command mode: validate transport shape only, not executable policy.
 
@@ -238,6 +261,10 @@ def call(name, a):
         except (ValueError, PermissionError, TypeError):
             PHONE_MODULE._audit(phone_name, False, "validation or approval failed")
             raise
+    if name.startswith("gallery_"):
+        if GALLERY_MODULE is None or name not in GALLERY_TOOLS:
+            raise ValueError(f"Unknown gallery tool: {name}")
+        return GALLERY_TOOLS[name][1](a)
     if name.startswith("google_"):
         if GOOGLE_MODULE is None or name not in GOOGLE_TOOLS:
             raise ValueError(f"Unknown Google tool: {name}")
@@ -254,7 +281,12 @@ def respond(msg):
     elif method == "ping": result = {}
     elif method == "tools/list": result = {"tools": TOOLS}
     elif method == "tools/call":
-        try: result = text_result(call(msg["params"]["name"], msg["params"].get("arguments", {})))
+        try:
+            value = call(msg["params"]["name"], msg["params"].get("arguments", {}))
+            if isinstance(value, dict) and "__mcp_content__" in value:
+                result = {"content": value["__mcp_content__"], "isError": False}
+            else:
+                result = text_result(value)
         except Exception as e: result = text_result({"error": type(e).__name__, "message": str(e)}, error=True)
     else: return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "Method not found"}}
     return {"jsonrpc": "2.0", "id": mid, "result": result}
