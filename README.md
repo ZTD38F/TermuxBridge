@@ -115,3 +115,25 @@ See `SECURITY.md` and `.gitignore`.
 ## Current deployment state
 
 The canonical runtime snapshot has been imported from the working phone without secrets or generated state. GitHub is now the source of truth for the managed TermuxBridge runtime. The current phone deployment should follow the verified `stable` branch through the transactional updater.
+
+
+## Local photo gallery
+
+TermuxBridge can expose the Android shared-storage photo library to ChatGPT as
+read-only MCP image tools. Source photos are never modified. A private SQLite
+metadata index is stored under `~/.termux-mcp-bridge/gallery.sqlite3`.
+
+Gallery tools:
+
+- `gallery_scan` — refresh the local metadata index.
+- `gallery_status` — report indexed image/album counts.
+- `gallery_albums` / `gallery_list` — browse and filter indexed photos.
+- `gallery_thumbnail` — return one bounded preview as MCP image content.
+- `gallery_get_image` — return one higher-quality bounded preview.
+- `gallery_get_images` — return up to 12 selected photos in one call.
+- `gallery_contact_sheet` — render up to 64 labeled thumbnails for efficient visual scanning.
+
+The image-rendering tools use Pillow when available in the Termux Python
+environment. Metadata indexing remains isolated from the original photos.
+Cloud-only Google Photos items that are not present in Android shared storage
+are outside this local gallery source.
