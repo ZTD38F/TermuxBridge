@@ -211,14 +211,14 @@ update_supervisor() {
   if pid_alive "$old_pid"; then kill "$old_pid" 2>/dev/null || true; fi
   cp -a "$candidate" "$ROOT/supervisor.py"
   chmod 600 "$ROOT/supervisor.py"
-  nohup env TERMUXBRIDGE_ROOT="$ROOT" python "$ROOT/supervisor.py" >"$ROOT/logs/supervisor.log" 2>&1 &
+  nohup env TERMUXBRIDGE_ROOT="$ROOT" python "$ROOT/supervisor.py" >"$ROOT/logs/supervisor.log" 2>&1 9>&- &
   new_pid=$!
   printf '%s\n' "$new_pid" >"$ROOT/supervisor.pid"
   sleep 1
   if ! pid_alive "$new_pid" || ! router_call /__bridge/healthz >/dev/null 2>&1; then
     if pid_alive "$new_pid"; then kill "$new_pid" 2>/dev/null || true; fi
     cp -a "$backup" "$ROOT/supervisor.py"
-    nohup env TERMUXBRIDGE_ROOT="$ROOT" python "$ROOT/supervisor.py" >"$ROOT/logs/supervisor.log" 2>&1 &
+    nohup env TERMUXBRIDGE_ROOT="$ROOT" python "$ROOT/supervisor.py" >"$ROOT/logs/supervisor.log" 2>&1 9>&- &
     printf '%s\n' "$!" >"$ROOT/supervisor.pid"
     log "ERROR supervisor update rolled back"
     return 1
@@ -236,7 +236,7 @@ ensure_seamless_topology() {
   old_generation="$(cat "$STATE" 2>/dev/null || echo legacy)"
   write_route "$old_generation" 18771
   "$ROOT/stop_bridge.sh" >>"$LOG" 2>&1 || true
-  "$ROOT/start_bridge.sh" >>"$LOG" 2>&1
+  "$ROOT/start_bridge.sh" >>"$LOG" 2>&1 9>&-
 }
 
 recover_unfinished
@@ -334,7 +334,7 @@ fi
 if [[ "$PREVIOUS_PORT" == 18771 ]]; then CANDIDATE_PORT=18772; else CANDIDATE_PORT=18771; fi
 journal CANDIDATE_STARTING
 
-nohup env TERMUX_BRIDGE_ROOT="$HOME" TERMUX_BRIDGE_JOBS="$ROOT/jobs" TERMUX_BRIDGE_BACKEND_TOKEN_FILE="$BACKEND_TOKEN_FILE"   python "$CANDIDATE/bridge_server.py" --http "$CANDIDATE_PORT" >"$ROOT/logs/server-$TARGET.log" 2>&1 &
+nohup env TERMUX_BRIDGE_ROOT="$HOME" TERMUX_BRIDGE_JOBS="$ROOT/jobs" TERMUX_BRIDGE_BACKEND_TOKEN_FILE="$BACKEND_TOKEN_FILE"   python "$CANDIDATE/bridge_server.py" --http "$CANDIDATE_PORT" >"$ROOT/logs/server-$TARGET.log" 2>&1 9>&- &
 CANDIDATE_PID=$!
 for _ in {1..40}; do pid_alive "$CANDIDATE_PID" && backend_health "$CANDIDATE_PORT" && break; sleep 0.25; done
 if ! pid_alive "$CANDIDATE_PID" || ! backend_health "$CANDIDATE_PORT"; then
@@ -391,7 +391,7 @@ journal COMMITTED
 # still retire synchronously.
 if pid_alive "$PREVIOUS_PID" && [[ "$PREVIOUS_PID" != "$CANDIDATE_PID" ]]; then
   if [[ "$SELF_HOSTED_UPDATE" == 1 ]]; then
-    nohup python - "$PREVIOUS_GENERATION" "$PREVIOUS_PID" "$ROUTER_TOKEN_FILE" "$LOG" <<'PY' >/dev/null 2>&1 &
+    nohup python - "$PREVIOUS_GENERATION" "$PREVIOUS_PID" "$ROUTER_TOKEN_FILE" "$LOG" <<'PY' >/dev/null 2>&1 9>&- &
 import json,os,pathlib,signal,sys,time,urllib.request
 generation,pid_s,token_path,log_path=sys.argv[1:]
 pid=int(pid_s)
@@ -457,7 +457,7 @@ if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
     --control-plane.api-key "file:$KEYFILE" \
     --mcp.server-url http://127.0.0.1:8765/mcp \
     --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
-    >"$TRANSPORT_LOG" 2>&1 &
+    >"$TRANSPORT_LOG" 2>&1 9>&- &
   NEW_TUNNEL_PID=$!
   sleep 5
   if ! pid_alive "$NEW_TUNNEL_PID"; then
@@ -476,7 +476,7 @@ if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
       --control-plane.api-key "file:$KEYFILE" \
       --mcp.server-url http://127.0.0.1:8765/mcp \
       --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
-      >"$ROOT/logs/tunnel.log" 2>&1 &
+      >"$ROOT/logs/tunnel.log" 2>&1 9>&- &
     echo $! >"$ROOT/bridge.pid"
     rm -f "$VERSIONED"
     exit 1
