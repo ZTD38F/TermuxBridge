@@ -135,5 +135,10 @@ Gallery tools:
 
 The image-rendering tools use Pillow when available in the Termux Python
 environment. Metadata indexing remains isolated from the original photos.
+
+For MCP clients that cached the older tool list, the existing `read_text` tool
+also accepts read-only virtual paths such as `gallery://image/123` and
+`gallery://contact-sheet?limit=36&offset=0`. This keeps image access usable
+without requiring an immediate connector/tool-schema refresh.
 Cloud-only Google Photos items that are not present in Android shared storage
 are outside this local gallery source.
