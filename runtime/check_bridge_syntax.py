@@ -1,5 +1,9 @@
 import py_compile
 from pathlib import Path
-p=Path.home()/"termux-mcp-bridge"/"bridge_server.py"
-py_compile.compile(str(p), doraise=True)
+
+root = Path.home() / "termux-mcp-bridge"
+for name in ("bridge_server.py", "gallery_bridge_tools.py"):
+    p = root / name
+    if p.exists():
+        py_compile.compile(str(p), doraise=True)
 print("syntax ok")

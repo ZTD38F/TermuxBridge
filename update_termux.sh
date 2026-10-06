@@ -29,6 +29,7 @@ SELF_HOSTED_UPDATE=0
 
 RUNTIME_FILES=(
   bridge_server.py
+  gallery_bridge_tools.py
   google_bridge_tools.py
   local_https_proxy.py
   check_bridge_syntax.py
