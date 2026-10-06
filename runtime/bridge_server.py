@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.1"
+BRIDGE_VERSION = "1.2.2"
 
 import hashlib
 import hmac
