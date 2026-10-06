@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.0"
+BRIDGE_VERSION = "1.2.1"
 
 import hashlib
 import hmac
@@ -151,6 +151,81 @@ if GALLERY_SERVER.is_file():
                 },
             })
 
+
+def gallery_virtual_read(path: str, max_chars: int = 100000):
+    """Backward-compatible image access through the long-lived read_text tool.
+
+    Existing ChatGPT sessions can keep using the already-discovered read_text
+    tool even when the MCP client has not refreshed the newly added gallery_*
+    tool list yet.
+    """
+    if GALLERY_MODULE is None:
+        raise ValueError("Gallery bridge is unavailable")
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(path)
+    if parsed.scheme != "gallery":
+        raise ValueError("Not a gallery virtual path")
+    route = (parsed.netloc + parsed.path).strip("/")
+    query = parse_qs(parsed.query, keep_blank_values=False)
+
+    def one(name, default=None):
+        values = query.get(name)
+        return values[-1] if values else default
+
+    if route.startswith("image/"):
+        image_id = int(route.split("/", 1)[1])
+        edge = int(one("max_edge", "3072"))
+        quality = int(one("quality", "90"))
+        return GALLERY_MODULE.gallery_get_image({"id": image_id, "max_edge": edge, "quality": quality})
+
+    if route.startswith("thumbnail/"):
+        image_id = int(route.split("/", 1)[1])
+        edge = int(one("max_edge", "768"))
+        return GALLERY_MODULE.gallery_thumbnail({"id": image_id, "max_edge": edge})
+
+    if route in {"contact-sheet", "contact_sheet"}:
+        args = {
+            "limit": int(one("limit", "36")),
+            "offset": int(one("offset", "0")),
+            "columns": int(one("columns", "6")),
+            "sort": one("sort", "newest"),
+        }
+        for key in ("query", "album", "date_from", "date_to"):
+            value = one(key)
+            if value not in (None, ""):
+                args[key] = value
+        return GALLERY_MODULE.gallery_contact_sheet(args)
+
+    if route == "status":
+        return GALLERY_MODULE.gallery_status({})
+
+    if route == "albums":
+        args = {"limit": int(one("limit", "100"))}
+        value = one("query")
+        if value:
+            args["query"] = value
+        return GALLERY_MODULE.gallery_albums(args)
+
+    if route == "list":
+        args = {
+            "limit": int(one("limit", "50")),
+            "offset": int(one("offset", "0")),
+            "sort": one("sort", "newest"),
+        }
+        for key in ("query", "album", "date_from", "date_to"):
+            value = one(key)
+            if value not in (None, ""):
+                args[key] = value
+        return GALLERY_MODULE.gallery_list(args)
+
+    raise ValueError(
+        "Unknown gallery virtual path; use gallery://image/ID, "
+        "gallery://thumbnail/ID, gallery://contact-sheet, gallery://status, "
+        "gallery://albums, or gallery://list"
+    )
+
+
 def checked_argv(argv):
     """Open command mode: validate transport shape only, not executable policy.
 
@@ -207,6 +282,8 @@ def call(name, a):
         p = inside(a.get("path", ".")); limit = a.get("limit", 100)
         return [{"name": x.name, "type": "dir" if x.is_dir() else "file", "size": x.stat().st_size if x.is_file() else None} for x in sorted(p.iterdir())[:limit]]
     if name == "read_text":
+        if isinstance(a.get("path"), str) and a["path"].startswith("gallery://"):
+            return gallery_virtual_read(a["path"], a.get("max_chars", 100000))
         p = inside(a["path"]); n = a.get("max_chars", 100000)
         data = p.read_bytes()[:n + 1]
         return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "text": data[:n].decode("utf-8", "replace"), "truncated": len(data) > n}
