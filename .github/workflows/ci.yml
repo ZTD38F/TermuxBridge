@@ -45,6 +45,7 @@ jobs:
           grep -Fq 'DRAINING_OLD' update_termux.sh
           grep -Fq 'FAILED_ROLLED_BACK' update_termux.sh
           grep -Fq 'update_supervisor' update_termux.sh
+          grep -Fq '9>&-' update_termux.sh
           grep -Fq 'TRANSPORT_UPDATE' update_termux.sh
           grep -Fq 'X-Bridge-Token' runtime/supervisor.py
           grep -Fq 'X-Bridge-Backend-Token' runtime/supervisor.py
