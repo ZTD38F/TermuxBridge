@@ -383,6 +383,8 @@ ln -sfn "$CANDIDATE" "$ROOT/current"
 printf '%s\n' "$TARGET" >"$STATE"
 printf '%s\n' "$CANDIDATE_PID" >"$ROOT/server.pid"
 install_management_from_stage "$TMP/source"
+# After the atomic pointer switch, COMMITTED must describe the active generation.
+CURRENT="$TARGET"
 journal COMMITTED
 
 # Old backend retirement happens after commit. A self-hosted MCP update must
