@@ -46,6 +46,12 @@ jobs:
           grep -Fq 'FAILED_ROLLED_BACK' update_termux.sh
           grep -Fq 'update_supervisor' update_termux.sh
           grep -Fq '9>&-' update_termux.sh
+          grep -Fq 'if [[ "$CURRENT" == "$TARGET" ]]' update_termux.sh
+          grep -Fq 'mv -T "$CANDIDATE.tmp" "$CANDIDATE"' update_termux.sh
+          if grep -Fq '"${1:-}" != "--force"' update_termux.sh; then
+            echo "Current generation must remain an idempotent no-op"
+            exit 1
+          fi
           grep -Fq 'TRANSPORT_UPDATE' update_termux.sh
           grep -Fq 'X-Bridge-Token' runtime/supervisor.py
           grep -Fq 'X-Bridge-Backend-Token' runtime/supervisor.py
