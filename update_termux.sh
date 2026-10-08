@@ -260,7 +260,7 @@ if [[ -z "${TARGET:-}" ]]; then
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
 [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { log "ERROR invalid target SHA"; exit 1; }
-if [[ "$CURRENT" == "$TARGET" && "${1:-}" != "--force" ]]; then log "ok already current $CURRENT"; exit 0; fi
+if [[ "$CURRENT" == "$TARGET" ]]; then log "ok already current $CURRENT"; exit 0; fi
 
 TMP="$(mktemp -d "$HOME/.cache/termuxbridge-update.XXXXXX")"
 mkdir -p "$TMP/source"
@@ -298,7 +298,10 @@ CANDIDATE="$RELEASES/$TARGET"
 rm -rf "$CANDIDATE.tmp"
 mkdir -p "$CANDIDATE.tmp"
 for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
-mv "$CANDIDATE.tmp" "$CANDIDATE"
+if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
+  journal FAILED_PRE_SWITCH "candidate generation path already exists"
+  exit 1
+fi
 journal STAGED
 
 ensure_seamless_topology
