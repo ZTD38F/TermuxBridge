@@ -16,6 +16,7 @@ class TunnelWatchdogTests(unittest.TestCase):
             "2026 WARN proxyconnect tcp refused": "PROXY",
             "2026 ERROR DNS lookup: no such host": "DNS",
             "2026 WARN timeout while dialing": "NETWORK",
+            "2026 ERROR listen tcp 127.0.0.1:8080: bind: address already in use": "PORT_CONFLICT",
             "2026 INFO tls trust summary Certificates are configured": "TLS",
             "": "UNKNOWN",
         }
@@ -31,6 +32,12 @@ class TunnelWatchdogTests(unittest.TestCase):
         self.assertEqual(diagnostic_lines(info + "\n" + auth), auth)
         self.assertEqual(classify_error(diagnostic_lines(info + "\n" + auth)), "AUTHORIZATION")
         self.assertEqual(classify_error(diagnostic_lines(info + "\n" + tls)), "TLS")
+
+    def test_watchdog_uses_loopback_ephemeral_health_port(self):
+        code = Path("runtime/tunnel_watchdog.py").read_text()
+        self.assertIn('"--health.listen-addr", "127.0.0.1:0"', code)
+        updater = Path("update_termux.sh").read_text()
+        self.assertEqual(updater.count("--health.listen-addr 127.0.0.1:0"), 2)
 
     def test_bounded_retry(self):
         self.assertEqual(retry_delay(1, "UNKNOWN"), 2)
