@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 
-from runtime.recover_bridge_port import port_free, recover
+from runtime.recover_bridge_port import port_free, recover, stop_owned_pid
 
 
 HANDLER_TEMPLATE = """import sys
@@ -87,6 +87,18 @@ class RecoveryTests(unittest.TestCase):
     def test_unrecognized_response_is_not_terminated(self):
         child, port = self.spawn("bridge_server.py", "AnotherServer/1.0")
         self.assertEqual(recover(self.root, port, "mcp"), 3)
+        self.assertIsNone(child.poll())
+
+    def test_pidfile_does_not_stop_unrelated_process(self):
+        child, port = self.spawn("unrelated.py", "TermuxSafeBridge/1.2.0")
+        self.assertEqual(stop_owned_pid(self.root, child.pid, "backend"), 3)
+        self.assertIsNone(child.poll())
+
+    def test_known_managed_pid_can_be_stopped(self):
+        child, port = self.spawn("bridge_server.py", "TermuxSafeBridge/1.2.0")
+        # The pidfile guard accepts only canonical runtime ports.
+        # The integration test uses a random port, so it must refuse.
+        self.assertEqual(stop_owned_pid(self.root, child.pid, "backend"), 3)
         self.assertIsNone(child.poll())
 
 
