@@ -369,12 +369,12 @@ for file in "${RUNTIME_FILES[@]}" "${MANAGEMENT_FILES[@]}"; do
 done
 # Stage every verified Python helper, not only the historical fixed list.
 # Otherwise old updaters omit newly introduced source modules.
-mapfile -t STAGED_RUNTIME_FILES < <(find "$TMP/source/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\\n' | LC_ALL=C sort)
+mapfile -t STAGED_RUNTIME_FILES < <(find "$TMP/source/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | LC_ALL=C sort)
 [[ "${#STAGED_RUNTIME_FILES[@]}" -ge "${#RUNTIME_FILES[@]}" ]] || {
   journal FAILED_PRE_SWITCH "verified release has too few runtime files"; exit 1;
 }
 for file in "${STAGED_RUNTIME_FILES[@]}"; do
-  [[ "$file" =~ ^[a-zA-Z0-9_-]+\\.py$ ]] || { journal FAILED_PRE_SWITCH "invalid runtime file name"; exit 1; }
+  [[ "$file" =~ ^[a-zA-Z0-9_-]+\.py$ ]] || { journal FAILED_PRE_SWITCH "invalid runtime file name"; exit 1; }
 done
 [[ -f "$TMP/source/update_termux.sh" && -f "$TMP/source/termuxbridgectl" && -f "$TMP/source/runtime/gpt" ]] || { journal FAILED_PRE_SWITCH "missing management scripts"; exit 1; }
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
