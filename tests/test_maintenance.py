@@ -89,6 +89,14 @@ class MaintenanceTests(unittest.TestCase):
         self.assertNotIn(r'+"\\n",encoding', source)
         self.assertIn(r'+"\n",encoding', source)
 
+    def test_production_update_rejects_unpublished_sources(self):
+        source = UPDATE.read_text()
+        self.assertIn("Production maintenance accepts published checksum-verified releases only", source)
+        self.assertIn('ERROR stable release metadata unavailable', source)
+        self.assertIn('ERROR latest stable release metadata invalid', source)
+        self.assertNotIn('if [[ -z "${TARGET:-}" ]]', source)
+        self.assertIn('sha256sum -c source.sha256', source)
+
     def test_job_scheduler_hourly_persisted_and_mgmt_is_versioned(self):
         ctl = CTL.read_text()
         up = UPDATE.read_text()
