@@ -21,6 +21,14 @@ class StartupLockTests(unittest.TestCase):
         self.assertIn("existing candidate differs from verified release", data)
         self.assertIn("candidate generation is active, linked, or invalid", data)
 
+    def test_pid_zero_never_signalled(self):
+        updater = (ROOT / "update_termux.sh").read_text()
+        start = (ROOT / "runtime/start_bridge.sh").read_text()
+        stop = (ROOT / "runtime/stop_bridge.sh").read_text()
+        self.assertIn('"${1:-0}" -gt 1', updater)
+        self.assertIn('"$pid" -gt 1', start)
+        self.assertIn('"$pid" -gt 1', stop)
+
     def test_concurrent_update_is_reported(self):
         data = (ROOT / "update_termux.sh").read_text()
         self.assertIn('flock -n 9 || { echo "Bridge update is already in progress', data)
