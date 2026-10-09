@@ -15,7 +15,18 @@ case "${1:-check}" in
     ;;
   update|update-now)
     shift || true
-    exec "$ROOT/update_termux.sh" --force "$@"
+    # Copy the updater before running it, so a version swap cannot truncate
+    # the executing script even if an older updater uses non-atomic cp.
+    mkdir -p "$ROOT/state"
+    snapshot="$(mktemp "$ROOT/state/.manual-updater.XXXXXX")"
+    cp "$ROOT/update_termux.sh" "$snapshot"
+    chmod 700 "$snapshot"
+    set +e
+    "$snapshot" --force "$@"
+    rc=$?
+    set -e
+    rm -f "$snapshot"
+    exit "$rc"
     ;;
   restart)
     "$ROOT/stop_bridge.sh"
