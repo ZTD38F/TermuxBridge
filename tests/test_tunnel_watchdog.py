@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from runtime.tunnel_watchdog import classify_error, retry_delay, update_status
+from runtime.tunnel_watchdog import classify_error, diagnostic_lines, retry_delay, update_status
 
 
 class TunnelWatchdogTests(unittest.TestCase):
@@ -22,6 +22,15 @@ class TunnelWatchdogTests(unittest.TestCase):
         for message, expected in cases.items():
             with self.subTest(message=message):
                 self.assertEqual(classify_error(message), expected)
+
+    def test_diagnostic_filter_recognizes_severity_and_ignores_info(self):
+        info = "2026 INFO configured certificates in TLS trust store"
+        auth = "2026 ERROR remote control plane returned HTTP 403 forbidden"
+        tls = "2026 WARN x509: certificate signed by unknown authority"
+        self.assertEqual(diagnostic_lines(info), "")
+        self.assertEqual(diagnostic_lines(info + "\n" + auth), auth)
+        self.assertEqual(classify_error(diagnostic_lines(info + "\n" + auth)), "AUTHORIZATION")
+        self.assertEqual(classify_error(diagnostic_lines(info + "\n" + tls)), "TLS")
 
     def test_bounded_retry(self):
         self.assertEqual(retry_delay(1, "UNKNOWN"), 2)
