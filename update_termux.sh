@@ -36,7 +36,7 @@ RUNTIME_FILES=(
   check_phone_bridge.py
   validate_phone_integration.py
 )
-MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py)
+MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh)
 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
@@ -63,7 +63,7 @@ if p.exists():
         if d.get("phase") == "CANDIDATE_STARTING":
             d.update(phase="FAILED_PRE_SWITCH",failure_reason="pre-switch validation failed",updated_at=int(time.time()))
             tmp=p.with_suffix(".tmp")
-            tmp.write_text(json.dumps(d,separators=(",",":"))+"\\n",encoding="utf-8")
+            tmp.write_text(json.dumps(d,separators=(",",":"))+"\n",encoding="utf-8")
             os.replace(tmp,p)
     except (OSError,ValueError):
         pass
@@ -135,7 +135,7 @@ pid=int(sys.argv[1])
 path=pathlib.Path("/proc")/str(pid)
 try:
     if path.stat().st_uid!=os.getuid():raise SystemExit(1)
-    args=[os.fsdecode(x) for x in (path/"cmdline").read_bytes().split(b"\\0") if x]
+    args=[os.fsdecode(x) for x in (path/"cmdline").read_bytes().split(b"\0") if x]
     expected=str(pathlib.Path(sys.argv[2]).resolve())
     if expected not in args:raise SystemExit(1)
     index=args.index("--http")
@@ -233,6 +233,8 @@ install_management_from_stage() {
   fi
   cp -a "$source_root/runtime/recover_bridge_port.py" "$ROOT/recover_bridge_port.py"
   cp -a "$source_root/runtime/tunnel_watchdog.py" "$ROOT/tunnel_watchdog.py"
+  cp -a "$source_root/runtime/maintain_bridge.sh" "$ROOT/maintain_bridge.sh"
+  chmod 700 "$ROOT/maintain_bridge.sh"
   cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh"
   mkdir -p "$HOME/bin"
   cp -a "$source_root/termuxbridgectl" "$HOME/bin/termuxbridgectl"
@@ -299,18 +301,21 @@ recover_unfinished
 CURRENT="$(cat "$STATE" 2>/dev/null || true)"
 TARGET_TAG=""
 if [[ "$CHANNEL" == "stable" ]]; then
-  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
-  if [[ -n "$RELEASE_JSON" ]]; then
-    read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
-    if [[ -n "$TARGET_TAG" && "$RELEASE_DRAFT" == false && "$RELEASE_PRERELEASE" == false ]]; then
-      TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
-        python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
-    else
-      TARGET_TAG=""
-    fi
+  # Production maintenance accepts published checksum-verified releases only.
+  # Never silently fall back to an unsigned/unpublished branch archive.
+  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest")" || {
+    log "ERROR stable release metadata unavailable"
+    exit 1
+  }
+  read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
+  if [[ ! "$TARGET_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$RELEASE_DRAFT" != false || "$RELEASE_PRERELEASE" != false ]]; then
+    log "ERROR latest stable release metadata invalid"
+    exit 1
   fi
-fi
-if [[ -z "${TARGET:-}" ]]; then
+  TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
+    python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+else
+  # Non-stable channels are explicit development mode, not automatic maintenance.
   TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$CHANNEL" |
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
@@ -360,7 +365,7 @@ done
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
 
 python -m py_compile "$TMP/source/runtime/"*.py
-for file in start_bridge.sh status_bridge.sh stop_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
+for file in start_bridge.sh status_bridge.sh stop_bridge.sh maintain_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
 bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl" "$TMP/source/runtime/gpt"
 journal VERIFIED_ARTIFACT
 

@@ -25,8 +25,14 @@ case "${1:-check}" in
     tail -n "${2:-100}" "$ROOT/logs/update.log" 2>/dev/null || true
     ;;
   auto-update-enable)
-    termux-job-scheduler       --script "$ROOT/update_termux.sh"       --job-id "$JOB_ID"       --period-ms 86400000       --network any       --battery-not-low true       --storage-not-low true       --persisted true >/dev/null
-    echo "TermuxBridge automatic updates enabled."
+    [[ -x "$ROOT/maintain_bridge.sh" ]] || { echo "Maintenance script missing; update TermuxBridge first" >&2; exit 1; }
+    # Android JobScheduler is opportunistic, not an exact hourly timer.
+    termux-job-scheduler --script "$ROOT/maintain_bridge.sh" --job-id "$JOB_ID" --period-ms 3600000 --network any --battery-not-low false --storage-not-low true --persisted true >/dev/null
+    termux-job-scheduler --pending | grep -F "Job $JOB_ID:" | grep -F "$ROOT/maintain_bridge.sh" >/dev/null || {
+      echo "Failed to verify Android maintenance job" >&2
+      exit 1
+    }
+    echo "TermuxBridge hourly self-maintenance scheduled (Android may defer runs)."
     ;;
   auto-update-disable)
     termux-job-scheduler --cancel --job-id "$JOB_ID" >/dev/null 2>&1 || true
@@ -35,8 +41,25 @@ case "${1:-check}" in
   auto-update-status)
     termux-job-scheduler --pending
     ;;
+  maintenance-now|auto-update-now)
+    exec "$ROOT/maintain_bridge.sh"
+    ;;
+  maintenance-status)
+    if [[ -f "$ROOT/state/maintenance.json" ]]; then
+      python - "$ROOT/state/maintenance.json" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1]))
+for key in ("last_checked_at","result","installed_generation","active_generation","update_phase","tunnel_state","startup_exit_code","updater_exit_code"):
+    print(key.upper(),s.get(key,"UNKNOWN"))
+PY
+    else
+      echo "No scheduled maintenance run recorded yet."
+    fi
+    echo "== Android schedule =="
+    termux-job-scheduler --pending | grep -F "Job $JOB_ID:" || true
+    ;;
   *)
-    echo "Usage: termuxbridgectl {check|status|update-status|update|update-now|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status}" >&2
+    echo "Usage: termuxbridgectl {check|status|update-status|update|update-now|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status|maintenance-now|maintenance-status}" >&2
     exit 2
     ;;
 esac
