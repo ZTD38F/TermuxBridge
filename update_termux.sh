@@ -102,7 +102,7 @@ tmp=p.with_suffix(".tmp"); tmp.write_text(json.dumps(data,separators=(",",":"))+
 PY
 }
 
-pid_alive() { [[ -n "${1:-}" && "$1" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null; }
+pid_alive() { [[ "${1:-}" =~ ^[0-9]+$ && "${1:-0}" -gt 1 ]] && kill -0 "$1" 2>/dev/null; }
 
 backend_health() {
   local port="$1"
