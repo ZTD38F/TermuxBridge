@@ -13,7 +13,8 @@ TUNNEL_FILE="$BRIDGE_DIR/secrets/tunnel_id"
 ROUTER_TOKEN_FILE="$BRIDGE_DIR/secrets/router_token"
 BACKEND_TOKEN_FILE="$BRIDGE_DIR/secrets/backend_token"
 CLIENT="$BRIDGE_DIR/bin/tunnel-client-runtime"
-LOCKFILE="$BRIDGE_DIR/.start.lock"
+LOCKFILE="$BRIDGE_DIR/.start.v2.lock"
+# v2 lock file bypasses a legacy lock inherited by long-lived daemons.
 STATE_DIR="$BRIDGE_DIR/state"
 ROUTE_FILE="$STATE_DIR/route.json"
 CURRENT_LINK="$BRIDGE_DIR/current"
@@ -57,13 +58,19 @@ fi
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
-  echo "Bridge start is already in progress"
-  exit 0
+  echo "Bridge start is already in progress; retry after the current startup finishes" >&2
+  exit 75
 fi
 
 pid_alive() {
   local file="$1"
-  [[ -s "$file" ]] && kill -0 "$(<"$file")" 2>/dev/null
+  if [[ -s "$file" ]]; then
+    local pid
+    pid="$(<"$file")"
+    [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] && kill -0 "$pid" 2>/dev/null
+  else
+    return 1
+  fi
 }
 
 proxy_healthy() {
@@ -180,7 +187,7 @@ export TERMUX_BRIDGE_ROOT="$HOME"
 export TERMUX_BRIDGE_JOBS="$BRIDGE_DIR/jobs"
 export TERMUX_BRIDGE_BACKEND_TOKEN_FILE="$BACKEND_TOKEN_FILE"
 
-nohup python "$BRIDGE_DIR/local_https_proxy.py" >"$BRIDGE_DIR/logs/proxy.log" 2>&1 &
+nohup python "$BRIDGE_DIR/local_https_proxy.py" >"$BRIDGE_DIR/logs/proxy.log" 2>&1 9>&- &
 echo $! >"$PROXY_PIDFILE"
 chmod 600 "$PROXY_PIDFILE"
 for _ in {1..20}; do
@@ -189,7 +196,7 @@ for _ in {1..20}; do
 done
 pid_alive "$PROXY_PIDFILE" && proxy_healthy || { echo "ERROR: local HTTPS proxy failed"; exit 1; }
 
-nohup python "$CURRENT_DIR/bridge_server.py" --http "$CURRENT_PORT" >"$BRIDGE_DIR/logs/server-$CURRENT_GENERATION.log" 2>&1 &
+nohup python "$CURRENT_DIR/bridge_server.py" --http "$CURRENT_PORT" >"$BRIDGE_DIR/logs/server-$CURRENT_GENERATION.log" 2>&1 9>&- &
 echo $! >"$SERVER_PIDFILE"
 chmod 600 "$SERVER_PIDFILE"
 for _ in {1..20}; do
@@ -198,7 +205,7 @@ for _ in {1..20}; do
 done
 pid_alive "$SERVER_PIDFILE" && backend_health "$CURRENT_PORT" || { echo "ERROR: MCP backend failed"; exit 1; }
 
-nohup env TERMUXBRIDGE_ROOT="$BRIDGE_DIR" python "$BRIDGE_DIR/supervisor.py" >"$BRIDGE_DIR/logs/supervisor.log" 2>&1 &
+nohup env TERMUXBRIDGE_ROOT="$BRIDGE_DIR" python "$BRIDGE_DIR/supervisor.py" >"$BRIDGE_DIR/logs/supervisor.log" 2>&1 9>&- &
 echo $! >"$SUPERVISOR_PIDFILE"
 chmod 600 "$SUPERVISOR_PIDFILE"
 for _ in {1..20}; do
