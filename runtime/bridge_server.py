@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.7"
+BRIDGE_VERSION = "1.2.8"
 
 import hashlib
 import hmac
@@ -10,6 +10,9 @@ import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import signal
+import re
+import itertools
 from pathlib import Path
 import subprocess
 import sys
@@ -19,8 +22,8 @@ ROOT = Path(os.environ.get("TERMUX_BRIDGE_ROOT", Path.home())).resolve()
 SHARED_ROOT = Path("/storage/emulated/0").resolve()
 ALLOWED_ROOTS = (ROOT, SHARED_ROOT)
 JOBS = Path(os.environ.get("TERMUX_BRIDGE_JOBS", ROOT / ".termux-mcp-bridge" / "jobs")).resolve()
-MAX_READ = 512_000
-MAX_OUTPUT = 256_000
+MAX_READ = 2_000_000
+MAX_OUTPUT = 1_000_000
 COMMAND_MODE = os.environ.get("TERMUX_BRIDGE_COMMAND_MODE", "open").lower()
 BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path.home() / "termux-mcp-bridge" / "secrets" / "backend_token")).resolve()
 
@@ -62,12 +65,14 @@ def schema(props=None, required=None):
 
 TOOLS = [
     {"name": "termux_status", "title": "Termux bridge status", "description": "Use this to verify the phone bridge, allowed root, Python, and active jobs.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
-    {"name": "list_files", "title": "List phone files", "description": "List files inside the configured Termux root. Does not read file contents.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
-    {"name": "read_text", "title": "Read a text file", "description": "Read a bounded UTF-8 text file inside the configured Termux root.", "inputSchema": schema({"path": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_READ, "default": 100000}}, ["path"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
-    {"name": "search_text", "title": "Search text files", "description": "Search for a literal string in bounded text files inside the Termux root.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "query": {"type": "string", "minLength": 1, "maxLength": 500}, "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, ["query"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "bridge_diagnostics", "title": "Bridge diagnostics", "description": "Sanitized runtime state, update progress, managed process health and unmanaged tunnel count.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "list_files", "title": "List phone files", "description": "List files inside the configured Termux root. Does not read file contents.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}, "offset": {"type": "integer", "minimum": 0, "default": 0}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "read_text", "title": "Read a text file", "description": "Read a bounded UTF-8 text file inside the configured Termux root.", "inputSchema": schema({"path": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_READ, "default": 100000}, "offset": {"type": "integer", "minimum": 0, "default": 0}, "include_sha256": {"type": "boolean", "default": True}}, ["path"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "search_text", "title": "Search text files", "description": "Search for a literal string in bounded text files inside the Termux root.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "query": {"type": "string", "minLength": 1, "maxLength": 500}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}, "offset": {"type": "integer", "minimum": 0, "default": 0}, "max_file_bytes": {"type": "integer", "minimum": 1, "maximum": 32_000_000, "default": MAX_READ}}, ["query"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "write_text", "title": "Write a text file safely", "description": "Create or replace one text file inside the allowed root. Existing files are backed up; expected_sha256 prevents stale overwrites.", "inputSchema": schema({"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256": {"type": "string"}}, ["path", "content"]), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
-    {"name": "run_command", "title": "Run a Termux command", "description": "Run any executable available to the Termux user. For shell syntax, pass bash -lc as argv. Android/Termux OS permissions still apply; no root is assumed.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200}, "cwd": {"type": "string", "default": "."}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 30}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
-    {"name": "start_job", "title": "Start a Termux background job", "description": "Start any executable available to the Termux user as a detached background job. For shell syntax, pass bash -lc as argv.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200}, "cwd": {"type": "string", "default": "."}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "run_command", "title": "Run a Termux command", "description": "Run any executable available to the Termux user. For shell syntax, pass bash -lc as argv. Android/Termux OS permissions still apply; no root is assumed.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4096}, "cwd": {"type": "string", "default": "."}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 30}, "max_output_chars": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT, "default": 256000}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "start_job", "title": "Start a Termux background job", "description": "Start any executable available to the Termux user as a detached background job. For shell syntax, pass bash -lc as argv.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4096}, "cwd": {"type": "string", "default": "."}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "stop_job", "title": "Stop tracked job", "description": "Send SIGTERM to an identity-verified job launched by this bridge, never SIGKILL.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}}, ["job_id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
     {"name": "job_status", "title": "Check background job", "description": "Check whether a bridge job is still running.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "read_job_log", "title": "Read background job log", "description": "Read the tail of a background job log without exposing bridge secrets.", "inputSchema": schema({"job_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT, "default": 20000}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "spotify_migrator", "title": "Run Spotify safe migrator", "description": "Run snapshot, resolve, plan, apply, verify, or status using spotify_v31_safe.py. Apply is a write action and ChatGPT should ask for confirmation.", "inputSchema": schema({"action": {"type": "string", "enum": ["snapshot", "resolve", "plan", "apply", "verify", "status"]}, "project_dir": {"type": "string", "default": "storage/downloads/Spotify_V3.1/work_v31/package"}, "background": {"type": "boolean", "default": True}}, ["action"]), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}},
@@ -235,8 +240,8 @@ def checked_argv(argv):
     """
     if not isinstance(argv, list) or not argv or any(not isinstance(x, str) or "\x00" in x for x in argv):
         raise ValueError("argv must be a non-empty string array without NUL bytes")
-    if len(argv) > 200:
-        raise ValueError("argv may contain at most 200 items")
+    if len(argv) > 4096 or sum(len(x.encode("utf-8")) for x in argv) > 512_000:
+        raise ValueError("argv exceeds 4096 items or 512 KB transport limit")
     return argv
 
 
@@ -249,26 +254,84 @@ def execution_cwd(cwd):
         raise ValueError(f"cwd is not a directory: {p}")
     return p
 
-def run(argv, cwd, timeout=30):
-    proc = subprocess.run(checked_argv(argv), cwd=execution_cwd(cwd), text=True, capture_output=True, timeout=timeout, env=os.environ.copy())
-    out = (proc.stdout + proc.stderr)[-MAX_OUTPUT:]
-    return {"exit_code": proc.returncode, "output": out, "truncated": len(proc.stdout) + len(proc.stderr) > MAX_OUTPUT}
+def process_identity(pid):
+    """Verify owner/start time and refuse zombie or reused PIDs."""
+    try:
+        p = Path("/proc") / str(int(pid))
+        if p.stat().st_uid != os.getuid(): return None
+        fields = (p / "stat").read_text().rsplit(") ", 1)[1].split()
+        return int(fields[19]) if fields[0] != "Z" else None
+    except (OSError, ValueError, IndexError): return None
+
+
+def job_alive(meta):
+    actual = process_identity(meta.get("pid", 0))
+    return actual is not None and meta.get("start_ticks") is not None and actual == meta["start_ticks"]
+
+
+def bridge_diagnostics():
+    root = Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge"))
+    output = {"version": BRIDGE_VERSION}
+    for section, keys in (("route", ("generation", "port")),
+                          ("update", ("phase", "update_kind", "current_generation")),
+                          ("tunnel_status", ("state", "reason", "attempts", "exit_code"))):
+        try:
+            values = json.loads((root / "state" / (section + ".json")).read_text())
+            output[section] = {key: values.get(key) for key in keys}
+        except (OSError, ValueError):
+            output[section] = {"available": False}
+    output["processes"] = {}
+    for label, filename in (("watchdog", "watchdog.pid"), ("tunnel", "bridge.pid"),
+                            ("supervisor", "supervisor.pid"), ("mcp", "server.pid"),
+                            ("proxy", "proxy.pid")):
+        try:
+            output["processes"][label] = process_identity(int((root / filename).read_text())) is not None
+        except (OSError, ValueError):
+            output["processes"][label] = False
+    extra = 0
+    try: tracked = int((root / "bridge.pid").read_text())
+    except (OSError, ValueError): tracked = -1
+    binary = (root / "bin/tunnel-client-runtime").resolve()
+    for p in Path("/proc").iterdir():
+        if not p.name.isdecimal() or int(p.name) == tracked: continue
+        try:
+            if p.stat().st_uid != os.getuid(): continue
+            args = [v for v in (p / "cmdline").read_bytes().split(b"\\0") if v]
+            if len(args)>1 and args[1]==b"run" and Path(os.fsdecode(args[0])).resolve()==binary:
+                extra += 1
+        except (OSError, ValueError): pass
+    output["unmanaged_tunnel_instances"] = extra
+    return output
+
+
+def run(argv, cwd, timeout=30, max_output_chars=256000):
+    proc = subprocess.run(checked_argv(argv), cwd=execution_cwd(cwd), text=True, errors="replace", capture_output=True, timeout=timeout, env=os.environ.copy())
+    out = proc.stdout + proc.stderr
+    return {"exit_code": proc.returncode, "output": out[-max_output_chars:], "truncated": len(out) > max_output_chars}
 
 
 def start(argv, cwd):
     JOBS.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    log = JOBS / f"pending-{stamp}.log"
+    JOBS.chmod(0o700)
+    log = JOBS / f"pending-{stamp}-{os.getpid()}.log"
     fh = log.open("ab", buffering=0)
-    proc = subprocess.Popen(checked_argv(argv), cwd=execution_cwd(cwd), stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+    log.chmod(0o600)
+    try:
+        proc = subprocess.Popen(checked_argv(argv), cwd=execution_cwd(cwd), stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+    finally:
+        fh.close()
     job_id = f"{stamp}-{proc.pid}"
     final = JOBS / f"{job_id}.log"
     log.rename(final)
-    (JOBS / f"{job_id}.json").write_text(json.dumps({"pid": proc.pid, "argv": argv, "cwd": str(execution_cwd(cwd)), "log": str(final)}), encoding="utf-8")
+    meta = JOBS / f"{job_id}.json"
+    meta.write_text(json.dumps({"pid": proc.pid, "start_ticks": process_identity(proc.pid), "cwd": str(execution_cwd(cwd)), "log": str(final), "argv_count": len(argv)}), encoding="utf-8")
+    meta.chmod(0o600)
     return {"job_id": job_id, "pid": proc.pid, "log": str(final)}
 
 
 def call(name, a):
+    if name == "bridge_diagnostics": return bridge_diagnostics()
     if name == "termux_status":
         active = 0
         JOBS.mkdir(parents=True, exist_ok=True)
@@ -279,27 +342,42 @@ def call(name, a):
             except Exception: pass
         return {"ok": True, "root": str(ROOT), "python": sys.version.split()[0], "active_jobs": active, "command_mode": COMMAND_MODE, "execution": "unrestricted-as-Termux-user"}
     if name == "list_files":
-        p = inside(a.get("path", ".")); limit = a.get("limit", 100)
-        return [{"name": x.name, "type": "dir" if x.is_dir() else "file", "size": x.stat().st_size if x.is_file() else None} for x in sorted(p.iterdir())[:limit]]
+        p = inside(a.get("path", ".")); limit = a.get("limit", 100); offset = a.get("offset", 0)
+        return [{"name": x.name, "type": "dir" if x.is_dir() else "file", "size": x.stat().st_size if x.is_file() else None} for x in itertools.islice(sorted(p.iterdir()), offset, offset + limit)]
     if name == "read_text":
         if isinstance(a.get("path"), str) and a["path"].startswith("gallery://"):
             return gallery_virtual_read(a["path"], a.get("max_chars", 100000))
         p = inside(a["path"]); n = a.get("max_chars", 100000)
-        data = p.read_bytes()[:n + 1]
-        return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "text": data[:n].decode("utf-8", "replace"), "truncated": len(data) > n}
+        offset = a.get("offset", 0); size = p.stat().st_size
+        with p.open("rb") as file:
+            file.seek(offset); data = file.read(n + 1)
+        digest = None
+        if a.get("include_sha256", True):
+            h = hashlib.sha256()
+            with p.open("rb") as file:
+                for chunk in iter(lambda: file.read(1024 * 1024), b""): h.update(chunk)
+            digest = h.hexdigest()
+        returned = min(n, len(data))
+        return {"path": str(p), "sha256": digest, "text": data[:n].decode("utf-8", "replace"),
+                "truncated": len(data) > n, "size": size, "offset": offset,
+                "next_offset": offset + returned if offset + returned < size else None}
     if name == "search_text":
-        base = inside(a.get("path", ".")); query = a["query"]; limit = a.get("limit", 100); hits = []
+        base = inside(a.get("path", ".")); query = a["query"]; limit = a.get("limit", 100); hits = []; seen = 0
+        offset = a.get("offset", 0); max_bytes = a.get("max_file_bytes", MAX_READ)
         files = [base] if base.is_file() else base.rglob("*")
         for p in files:
             if len(hits) >= limit: break
-            if not p.is_file() or p.stat().st_size > MAX_READ: continue
+            if not p.is_file() or p.stat().st_size > max_bytes: continue
             try:
                 for number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
                     if query in line:
-                        hits.append({"path": str(p.relative_to(ROOT)), "line": number, "text": line[:500]})
-                        if len(hits) >= limit: break
+                        if seen >= offset:
+                            hits.append({"path": str(p.relative_to(ROOT)), "line": number, "text": line[:2000]})
+                            if len(hits) >= limit: break
+                        seen += 1
             except (UnicodeDecodeError, OSError): pass
-        return {"query": query, "hits": hits, "limited": len(hits) >= limit}
+        return {"query": query, "hits": hits, "limited": len(hits) >= limit,
+                "offset": offset, "next_offset": offset + len(hits) if len(hits) >= limit else None}
     if name == "write_text":
         p = inside(a["path"]); p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
@@ -308,17 +386,23 @@ def call(name, a):
             backup = p.with_suffix(p.suffix + ".bridge-backup"); backup.write_bytes(p.read_bytes())
         tmp = p.with_suffix(p.suffix + ".bridge-tmp"); tmp.write_text(a["content"], encoding="utf-8"); tmp.replace(p)
         return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "backup_created": p.with_suffix(p.suffix + ".bridge-backup").exists()}
-    if name == "run_command": return run(a["argv"], a.get("cwd", "."), a.get("timeout_seconds", 30))
+    if name == "run_command": return run(a["argv"], a.get("cwd", "."), a.get("timeout_seconds", 30), a.get("max_output_chars", 256000))
     if name == "start_job": return start(a["argv"], a.get("cwd", "."))
-    if name in {"job_status", "read_job_log"}:
+    if name in {"job_status", "read_job_log", "stop_job"}:
         job_id = a["job_id"]
         if any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in job_id): raise ValueError("Invalid job ID")
         meta = json.loads((JOBS / f"{job_id}.json").read_text())
         if name == "job_status":
-            try: os.kill(meta["pid"], 0); running = True
-            except OSError: running = False
-            return {"job_id": job_id, "running": running, "pid": meta["pid"]}
-        n = a.get("max_chars", 20000); data = Path(meta["log"]).read_bytes(); return {"job_id": job_id, "text": data[-n:].decode("utf-8", "replace"), "truncated": len(data) > n}
+            return {"job_id": job_id, "running": job_alive(meta), "pid": meta["pid"], "identity_verified": meta.get("start_ticks") is not None}
+        if name == "stop_job":
+            if meta.get("start_ticks") is None: raise ValueError("Legacy job has no birth identity")
+            if not job_alive(meta): return {"job_id": job_id, "signal_sent": False, "running": False}
+            os.kill(meta["pid"], signal.SIGTERM)
+            return {"job_id": job_id, "signal_sent": True, "signal": "SIGTERM"}
+        n = a.get("max_chars", 20000)
+        with Path(meta["log"]).open("rb") as file:
+            size = file.seek(0, 2); file.seek(max(0, size - n)); data = file.read(n)
+        return {"job_id": job_id, "text": data.decode("utf-8", "replace"), "truncated": size > n}
     if name == "spotify_migrator":
         d = inside(a.get("project_dir", "storage/downloads/Spotify_V3.1/work_v31/package")); script = d / "spotify_v31_safe.py"
         if not script.is_file(): raise ValueError(f"Migrator not found: {script}")
