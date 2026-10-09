@@ -26,6 +26,34 @@ class ExtendedTermuxToolsTests(unittest.TestCase):
         b.ALLOWED_ROOTS = self.old_allowed_roots
         self.tmp.cleanup()
 
+    def test_existing_mcp_schemas_remain_immutable(self):
+        tools = {t["name"]: t["inputSchema"] for t in b.TOOLS}
+        self.assertEqual(tools["list_files"], b.schema({
+            "path": {"type": "string", "default": "."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}))
+        self.assertEqual(tools["read_text"], b.schema({
+            "path": {"type": "string"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 512000, "default": 100000}}, ["path"]))
+        self.assertEqual(tools["search_text"], b.schema({
+            "path": {"type": "string", "default": "."},
+            "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, ["query"]))
+        self.assertEqual(tools["run_command"], b.schema({
+            "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200},
+            "cwd": {"type": "string", "default": "."},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 30}}, ["argv"]))
+        self.assertEqual(tools["start_job"], b.schema({
+            "argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200},
+            "cwd": {"type": "string", "default": "."}}, ["argv"]))
+        self.assertEqual(tools["read_job_log"], b.schema({
+            "job_id": {"type": "string"},
+            "max_chars": {"type": "integer", "minimum": 1, "maximum": 256000, "default": 20000}}, ["job_id"]))
+        for name in ("bridge_diagnostics", "list_files_page", "read_text_chunk",
+                     "search_text_page", "run_command_extended", "start_job_extended",
+                     "read_job_log_extended", "stop_job"):
+            self.assertIn(name, tools)
+        self.assertEqual(len(b.TOOLS), len(tools))
+
     def test_command_arg_limit_and_output_limit(self):
         self.assertEqual(len(b.checked_argv(["true"] * 4096)), 4096)
         with self.assertRaises(ValueError):
@@ -38,14 +66,14 @@ class ExtendedTermuxToolsTests(unittest.TestCase):
 
     def test_directory_pagination(self):
         for i in range(6): (self.root / f"{i:02d}.txt").write_text(str(i))
-        a = b.call("list_files", {"path": ".", "limit": 2, "offset": 0})
-        z = b.call("list_files", {"path": ".", "limit": 2, "offset": 4})
+        a = b.call("list_files_page", {"path": ".", "limit": 2, "offset": 0})
+        z = b.call("list_files_page", {"path": ".", "limit": 2, "offset": 4})
         self.assertEqual([x["name"] for x in a], ["00.txt", "01.txt"])
         self.assertEqual([x["name"] for x in z], ["04.txt", "05.txt"])
 
     def test_text_pagination_and_integrity(self):
         (self.root / "text.txt").write_text("abcdefghij", encoding="utf-8")
-        a = b.call("read_text", {"path": "text.txt", "max_chars": 4, "offset": 4,
+        a = b.call("read_text_chunk", {"path": "text.txt", "max_chars": 4, "offset": 4,
                                  "include_sha256": False})
         self.assertEqual(a["text"], "efgh")
         self.assertEqual(a["next_offset"], 8)
@@ -58,7 +86,7 @@ class ExtendedTermuxToolsTests(unittest.TestCase):
 
     def test_search_pages_and_bigger_files(self):
         (self.root / "a.txt").write_text("one\nneedle1\nneedle2\n")
-        a = b.call("search_text", {"path": "a.txt", "query": "needle", "limit": 1, "offset": 0,
+        a = b.call("search_text_page", {"path": "a.txt", "query": "needle", "limit": 1, "offset": 0,
                                     "max_file_bytes": 1024})
         self.assertEqual(a["hits"][0]["line"], 2)
         self.assertEqual(a["next_offset"], 1)
