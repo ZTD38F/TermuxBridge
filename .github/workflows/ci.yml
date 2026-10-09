@@ -34,6 +34,24 @@ jobs:
           bash -n runtime/stop_bridge.sh
           bash -n update_termux.sh
           bash -n termuxbridgectl
+          bash -n install.sh
+
+      - name: Verify one-click installer fails safely without provisioning
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          if TERMUXBRIDGE_ROOT="$tmp/missing" PREFIX="/usr" bash install.sh >"$tmp/log" 2>&1; then
+            echo "Unprovisioned installation unexpectedly succeeded"
+            exit 1
+          fi
+          grep -Fq 'Existing deployment not found' "$tmp/log"
+          mkdir -p "$tmp/bridge"
+          if TERMUXBRIDGE_ROOT="$tmp/bridge" PREFIX="/usr" bash install.sh >"$tmp/log" 2>&1; then
+            echo "Installer unexpectedly accepted missing credentials"
+            exit 1
+          fi
+          grep -Fq 'Control-plane credential missing' "$tmp/log"
 
       - name: Validate update safety contract
         run: |
