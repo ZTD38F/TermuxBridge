@@ -367,6 +367,15 @@ journal DOWNLOADED
 for file in "${RUNTIME_FILES[@]}" "${MANAGEMENT_FILES[@]}"; do
   [[ -f "$TMP/source/runtime/$file" ]] || { journal FAILED_PRE_SWITCH "missing runtime/$file"; exit 1; }
 done
+# Stage every verified Python helper, not only the historical fixed list.
+# Otherwise old updaters omit newly introduced source modules.
+mapfile -t STAGED_RUNTIME_FILES < <(find "$TMP/source/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | LC_ALL=C sort)
+[[ "${#STAGED_RUNTIME_FILES[@]}" -ge "${#RUNTIME_FILES[@]}" ]] || {
+  journal FAILED_PRE_SWITCH "verified release has too few runtime files"; exit 1;
+}
+for file in "${STAGED_RUNTIME_FILES[@]}"; do
+  [[ "$file" =~ ^[a-zA-Z0-9_-]+\.py$ ]] || { journal FAILED_PRE_SWITCH "invalid runtime file name"; exit 1; }
+done
 [[ -f "$TMP/source/update_termux.sh" && -f "$TMP/source/termuxbridgectl" && -f "$TMP/source/runtime/gpt" ]] || { journal FAILED_PRE_SWITCH "missing management scripts"; exit 1; }
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
 
@@ -379,9 +388,25 @@ journal VERIFIED_ARTIFACT
 # unversioned gpt launcher remains installed. --force must repair management
 # files without attempting to stage the same immutable runtime directory again.
 if [[ "$CURRENT" == "$TARGET" ]]; then
+  # Verify and repair MISSING helpers from the same checksum-verified release.
+  # Never overwrite an existing immutable source file with different content.
+  active_release="$(readlink -f "$ROOT/current" 2>/dev/null || true)"
+  [[ "$active_release" == "$RELEASES/$CURRENT" ]] || {
+    journal FAILED_PRE_SWITCH "current generation link mismatch"; exit 1;
+  }
+  for file in "${STAGED_RUNTIME_FILES[@]}"; do
+    if [[ ! -e "$active_release/$file" && ! -L "$active_release/$file" ]]; then
+      cp -a "$TMP/source/runtime/$file" "$active_release/.$file.repair.tmp"
+      chmod 600 "$active_release/.$file.repair.tmp"
+      mv -f "$active_release/.$file.repair.tmp" "$active_release/$file"
+      log "repaired missing verified runtime helper $file"
+    elif [[ -L "$active_release/$file" ]] || ! cmp -s "$TMP/source/runtime/$file" "$active_release/$file"; then
+      journal FAILED_PRE_SWITCH "existing immutable runtime file differs"; exit 1
+    fi
+  done
   install_management_from_stage "$TMP/source"
   journal COMMITTED
-  log "ok repaired management files at current commit $CURRENT"
+  log "ok repaired active generation and management at current commit $CURRENT"
   exit 0
 fi
 
@@ -397,7 +422,7 @@ if [[ -e "$CANDIDATE" || -L "$CANDIDATE" ]]; then
     journal FAILED_PRE_SWITCH "candidate generation is active, linked, or invalid"
     exit 1
   fi
-  for file in "${RUNTIME_FILES[@]}"; do
+  for file in "${STAGED_RUNTIME_FILES[@]}"; do
     if [[ ! -f "$CANDIDATE/$file" ]] || ! cmp -s "$TMP/source/runtime/$file" "$CANDIDATE/$file"; then
       journal FAILED_PRE_SWITCH "existing candidate differs from verified release"
       exit 1
@@ -407,7 +432,7 @@ if [[ -e "$CANDIDATE" || -L "$CANDIDATE" ]]; then
 else
   rm -rf "$CANDIDATE.tmp"
   mkdir -p "$CANDIDATE.tmp"
-  for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
+  for file in "${STAGED_RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
   if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
     journal FAILED_PRE_SWITCH "cannot stage candidate generation"
     exit 1

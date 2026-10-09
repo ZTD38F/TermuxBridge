@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shlex
 import tempfile
 import unittest
 import fcntl
@@ -111,6 +112,34 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn('"$updater_snapshot" 8>&-', m)
         self.assertIn('snapshot="$(mktemp', t)
         self.assertIn('"$snapshot" --force "$@"', t)
+
+    def test_dynamic_helper_discovery_parses_newlines_and_regex(self):
+        source = UPDATE.read_text()
+        discover = next(line for line in source.splitlines()
+                        if line.startswith("mapfile -t STAGED_RUNTIME_FILES < <("))
+        validate = next(line for line in source.splitlines()
+                        if 'invalid runtime file name' in line)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "source/runtime"
+            folder.mkdir(parents=True)
+            for name in ("bridge_server.py", "maintenance_health.py", "future_helper.py"):
+                (folder / name).write_text("pass\n")
+            command = (f"TMP={shlex.quote(tmp)}\n" + discover +
+                       "\nfor file in \"${STAGED_RUNTIME_FILES[@]}\"; do\n" +
+                       validate + "\nprintf '%s\\n' \"$file\"\ndone\n")
+            result = subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines(),
+                             ["bridge_server.py", "future_helper.py", "maintenance_health.py"])
+
+    def test_new_runtime_helpers_are_not_dropped_by_fixed_old_updater_list(self):
+        updater = UPDATE.read_text()
+        self.assertIn('mapfile -t STAGED_RUNTIME_FILES', updater)
+        self.assertIn('for file in "${STAGED_RUNTIME_FILES[@]}"; do cp -a', updater)
+        self.assertIn('for file in "${STAGED_RUNTIME_FILES[@]}"; do', updater)
+        self.assertIn('if [[ "$CURRENT" == "$TARGET" ]]; then', updater)
+        self.assertIn('repaired missing verified runtime helper', updater)
+        self.assertIn('existing immutable runtime file differs', updater)
 
     def test_job_scheduler_hourly_persisted_and_mgmt_is_versioned(self):
         ctl = CTL.read_text()
