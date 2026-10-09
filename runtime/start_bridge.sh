@@ -7,6 +7,7 @@ PIDFILE="$BRIDGE_DIR/bridge.pid"
 SERVER_PIDFILE="$BRIDGE_DIR/server.pid"
 SUPERVISOR_PIDFILE="$BRIDGE_DIR/supervisor.pid"
 PROXY_PIDFILE="$BRIDGE_DIR/proxy.pid"
+WATCHDOG_PIDFILE="$BRIDGE_DIR/watchdog.pid"
 KEYFILE="$BRIDGE_DIR/secrets/control_plane_api_key"
 TUNNEL_FILE="$BRIDGE_DIR/secrets/tunnel_id"
 ROUTER_TOKEN_FILE="$BRIDGE_DIR/secrets/router_token"
@@ -127,10 +128,31 @@ else
   write_route "$CURRENT_GENERATION" "$CURRENT_PORT"
 fi
 
-if pid_alive "$PIDFILE" && pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
+start_tunnel_watchdog() {
+  [[ -f "$BRIDGE_DIR/tunnel_watchdog.py" ]] || {
+    echo "ERROR: tunnel watchdog missing" >&2; return 1;
+  }
+  if pid_alive "$WATCHDOG_PIDFILE" &&
+    python "$BRIDGE_DIR/recover_bridge_port.py" --root "$BRIDGE_DIR" --check-pid "$(<"$WATCHDOG_PIDFILE")" --role watchdog; then
+    echo "Tunnel watchdog active (PID $(<"$WATCHDOG_PIDFILE")); remote connectivity not yet confirmed."
+    return 0
+  fi
+  nohup python "$BRIDGE_DIR/tunnel_watchdog.py" "$BRIDGE_DIR"     >"$BRIDGE_DIR/logs/tunnel-watchdog.log" 2>&1 9>&- &
+  printf '%s\n' "$!" >"$WATCHDOG_PIDFILE"
+  chmod 600 "$WATCHDOG_PIDFILE"
+  sleep 1
+  if ! pid_alive "$WATCHDOG_PIDFILE"; then
+    echo "ERROR: tunnel watchdog failed; inspect tunnel-watchdog.log" >&2
+    return 1
+  fi
+  echo "Tunnel watchdog started (PID $(<"$WATCHDOG_PIDFILE")); reconnecting automatically."
+}
+
+# A tunnel failure MUST NOT restart a healthy authenticated MCP stack.
+if pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
    proxy_healthy && backend_health "$CURRENT_PORT" && router_health; then
-  echo "Already healthy: tunnel PID $(<"$PIDFILE"), supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE")"
-  exit 0
+  start_tunnel_watchdog
+  exit $?
 fi
 
 # Startup/reboot recovery may restart the complete local stack. Normal runtime
@@ -185,18 +207,6 @@ for _ in {1..20}; do
 done
 pid_alive "$SUPERVISOR_PIDFILE" && router_health || { echo "ERROR: bridge supervisor failed"; exit 1; }
 
-TUNNEL_ID="$(<"$TUNNEL_FILE")"
-[[ "$TUNNEL_ID" == tunnel_* ]] || { echo "ERROR: invalid tunnel ID"; exit 1; }
-export CONTROL_PLANE_TUNNEL_ID="$TUNNEL_ID"
-export HTTPS_PROXY="http://127.0.0.1:8877"
-export https_proxy="$HTTPS_PROXY"
-export CA_BUNDLE="$PREFIX/etc/tls/cert.pem"
-export SSL_CERT_FILE="$CA_BUNDLE"
-nohup "$CLIENT" run   --control-plane.api-key "file:$KEYFILE"   --mcp.server-url http://127.0.0.1:8765/mcp   --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE"   >"$BRIDGE_DIR/logs/tunnel.log" 2>&1 &
-echo $! >"$PIDFILE"
-chmod 600 "$PIDFILE"
-sleep 2
-pid_alive "$PIDFILE" || { echo "ERROR: tunnel client failed; run status_bridge.sh --logs"; exit 1; }
-
+start_tunnel_watchdog
 trap - ERR INT TERM
-echo "Started: tunnel PID $(<"$PIDFILE"), supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE")"
+echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."
