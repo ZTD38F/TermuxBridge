@@ -63,7 +63,7 @@ if p.exists():
         if d.get("phase") == "CANDIDATE_STARTING":
             d.update(phase="FAILED_PRE_SWITCH",failure_reason="pre-switch validation failed",updated_at=int(time.time()))
             tmp=p.with_suffix(".tmp")
-            tmp.write_text(json.dumps(d,separators=(",",":"))+"\\n",encoding="utf-8")
+            tmp.write_text(json.dumps(d,separators=(",",":"))+"\n",encoding="utf-8")
             os.replace(tmp,p)
     except (OSError,ValueError):
         pass
@@ -135,7 +135,7 @@ pid=int(sys.argv[1])
 path=pathlib.Path("/proc")/str(pid)
 try:
     if path.stat().st_uid!=os.getuid():raise SystemExit(1)
-    args=[os.fsdecode(x) for x in (path/"cmdline").read_bytes().split(b"\\0") if x]
+    args=[os.fsdecode(x) for x in (path/"cmdline").read_bytes().split(b"\0") if x]
     expected=str(pathlib.Path(sys.argv[2]).resolve())
     if expected not in args:raise SystemExit(1)
     index=args.index("--http")
