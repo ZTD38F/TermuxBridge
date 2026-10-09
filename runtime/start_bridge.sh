@@ -58,8 +58,8 @@ fi
 
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
-  echo "Bridge start is already in progress"
-  exit 0
+  echo "Bridge start is already in progress; retry after the current startup finishes" >&2
+  exit 75
 fi
 
 pid_alive() {
