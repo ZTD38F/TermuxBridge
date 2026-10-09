@@ -56,70 +56,17 @@ else
   echo "Verified update script is unavailable" >>"$LOG"
 fi
 
-# Only report bounded machine state. Never export tokens, raw logs or argv.
-python - "$STATE" "$ROOT" "$start_rc" "$update_rc" <<'PY'
-import datetime
-import json
-import os
-import pathlib
-import sys
-
-state=pathlib.Path(sys.argv[1])
-root=pathlib.Path(sys.argv[2])
-start_rc=int(sys.argv[3])
-update_rc=int(sys.argv[4])
-
-def load(name):
-    try:
-        return json.loads((root/"state"/name).read_text())
-    except (OSError, ValueError):
-        return {}
-
-def source():
-    try:
-        return (root/"source_commit").read_text().strip()
-    except OSError:
-        return ""
-
-route=load("route.json")
-journal=load("update.json")
-tunnel=load("tunnel_status.json")
-generation=source()
-consistent=(
-    bool(generation)
-    and generation==route.get("generation")
-    and generation==journal.get("current_generation")
-    and journal.get("phase")=="COMMITTED"
-)
-if update_rc==75:
-    result="BUSY"
-elif start_rc!=0 or update_rc!=0:
-    result="FAILED"
-elif not consistent:
-    result="DEGRADED"
-else:
-    result="OK"
-record={
-    "last_checked_at":datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-    "result":result,
-    "startup_exit_code":start_rc,
-    "updater_exit_code":update_rc,
-    "installed_generation":generation,
-    "active_generation":route.get("generation"),
-    "update_phase":journal.get("phase"),
-    "tunnel_state":tunnel.get("state"),
-    "verified_active_generation":consistent,
-}
-tmp=state.with_suffix(".tmp")
-tmp.write_text(json.dumps(record,sort_keys=True,separators=(",",":"))+"\n")
-tmp.chmod(0o600)
-os.replace(tmp,state)
-print("Maintenance:",result,"generation:",generation[:12],"tunnel:",tunnel.get("state","UNKNOWN"))
-PY
+# Inspect all managed PIDs and authenticated localhost services, not just version strings.
+health_script="$ROOT/current/maintenance_health.py"
+if [[ ! -f "$health_script" ]]; then
+  health_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/maintenance_health.py"
+fi
+health_rc=0
+python "$health_script" "$ROOT" "$start_rc" "$update_rc" || health_rc=$?
 
 printf '%s completed: start=%s update=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$start_rc" "$update_rc" >>"$LOG"
 rotate_log
 if [[ "$update_rc" -eq 75 ]]; then
   exit 0
 fi
-[[ "$start_rc" == 0 && "$update_rc" == 0 ]]
+[[ "$start_rc" == 0 && "$update_rc" == 0 && "$health_rc" == 0 ]]

@@ -114,8 +114,12 @@ def run(root: Path) -> int:
     while not STOP:
         adopted = valid_adopted_pid(root)
         if adopted is not None:
-            update_status(root, state="CLIENT_RUNNING", reason="NONE", pid=adopted, adopted=True)
+            next_heartbeat = 0.0
             while not STOP and managed_role_identity(adopted, root, "tunnel"):
+                if time.monotonic() >= next_heartbeat:
+                    update_status(root, state="CLIENT_RUNNING", reason="NONE",
+                                  pid=adopted, adopted=True, attempts=failures)
+                    next_heartbeat = time.monotonic() + 60
                 sleep_interruptibly(1)
             if STOP:
                 break
@@ -161,7 +165,12 @@ def run(root: Path) -> int:
                 pid_file.chmod(0o600)
                 update_status(root, state="CLIENT_RUNNING", reason="NONE", pid=process.pid,
                               adopted=False, attempts=failures)
+                next_heartbeat = time.monotonic() + 60
                 while not STOP and process.poll() is None:
+                    if time.monotonic() >= next_heartbeat:
+                        update_status(root, state="CLIENT_RUNNING", reason="NONE",
+                                      pid=process.pid, adopted=False, attempts=failures)
+                        next_heartbeat = time.monotonic() + 60
                     sleep_interruptibly(0.5)
                 if STOP and process.poll() is None:
                     process.terminate()

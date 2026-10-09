@@ -35,6 +35,7 @@ RUNTIME_FILES=(
   check_bridge_syntax.py
   check_phone_bridge.py
   validate_phone_integration.py
+  maintenance_health.py
 )
 MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh)
 

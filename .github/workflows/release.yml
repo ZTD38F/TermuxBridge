@@ -38,7 +38,9 @@ jobs:
       - name: Validate runtime
         run: |
           python -m py_compile runtime/*.py
-          bash -n runtime/start_bridge.sh runtime/status_bridge.sh runtime/stop_bridge.sh update_termux.sh termuxbridgectl
+          bash -n runtime/start_bridge.sh runtime/status_bridge.sh runtime/stop_bridge.sh runtime/maintain_bridge.sh update_termux.sh termuxbridgectl
+      - name: Run complete regression suite (required before publishing)
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build release artifacts
         run: |
           tar -czf "TermuxBridge-$TAG.tar.gz" \

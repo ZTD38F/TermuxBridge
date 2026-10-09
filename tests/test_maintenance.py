@@ -49,9 +49,12 @@ class MaintenanceTests(unittest.TestCase):
 
     def test_successful_run_records_consistent_status(self):
         done = self.invoke()
-        self.assertEqual(done.returncode, 0, done.stderr)
+        # Fixture has no real MCP or tunnel services: report degradation, not false OK.
+        self.assertNotEqual(done.returncode, 0, done.stderr)
         data = self.result()
-        self.assertEqual(data["result"], "OK")
+        self.assertEqual(data["result"], "DEGRADED")
+        self.assertEqual(data["reason"], "LOCAL_SERVICES_UNHEALTHY")
+        self.assertGreaterEqual(data["consecutive_failures"], 1)
         self.assertTrue(data["verified_active_generation"])
         self.assertEqual(data["tunnel_state"], "CLIENT_RUNNING")
         self.assertEqual(data["installed_generation"], SHA)
@@ -69,7 +72,7 @@ class MaintenanceTests(unittest.TestCase):
     def test_mismatched_route_is_not_falsely_reported_as_current(self):
         (self.root / "state/route.json").write_text(json.dumps({"generation": "b" * 40, "port": 18772}))
         done = self.invoke()
-        self.assertEqual(done.returncode, 0)
+        self.assertNotEqual(done.returncode, 0)
         data = self.result()
         self.assertEqual(data["result"], "DEGRADED")
         self.assertFalse(data["verified_active_generation"])
