@@ -41,7 +41,7 @@ MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 exec 9>"$LOCK"
-flock -n 9 || exit 0
+flock -n 9 || { echo "Bridge update is already in progress; inspect termuxbridgectl update-status" >&2; exit 75; }
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
@@ -102,7 +102,7 @@ tmp=p.with_suffix(".tmp"); tmp.write_text(json.dumps(data,separators=(",",":"))+
 PY
 }
 
-pid_alive() { [[ -n "${1:-}" && "$1" =~ ^[0-9]+$ ]] && kill -0 "$1" 2>/dev/null; }
+pid_alive() { [[ "${1:-}" =~ ^[0-9]+$ && "${1:-0}" -gt 1 ]] && kill -0 "$1" 2>/dev/null; }
 
 backend_health() {
   local port="$1"
@@ -326,17 +326,38 @@ journal VERIFIED_ARTIFACT
 # files without attempting to stage the same immutable runtime directory again.
 if [[ "$CURRENT" == "$TARGET" ]]; then
   install_management_from_stage "$TMP/source"
+  journal COMMITTED
   log "ok repaired management files at current commit $CURRENT"
   exit 0
 fi
 
 CANDIDATE="$RELEASES/$TARGET"
-rm -rf "$CANDIDATE.tmp"
-mkdir -p "$CANDIDATE.tmp"
-for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
-if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
-  journal FAILED_PRE_SWITCH "candidate generation path already exists"
-  exit 1
+# Interrupted updates may have created this immutable generation before
+# updating the router. Reuse it only if each shipped runtime file matches
+# the freshly checksum-verified release. Never remove or overwrite an active
+# generation or a symlink. This is safe after an interrupted STAGED phase.
+if [[ -e "$CANDIDATE" || -L "$CANDIDATE" ]]; then
+  if [[ -L "$CANDIDATE" || ! -d "$CANDIDATE" ||
+        "$(readlink -f "$ROOT/current" 2>/dev/null || true)" == "$(readlink -f "$CANDIDATE")" ||
+        "$(readlink -f "$ROOT/previous" 2>/dev/null || true)" == "$(readlink -f "$CANDIDATE")" ]]; then
+    journal FAILED_PRE_SWITCH "candidate generation is active, linked, or invalid"
+    exit 1
+  fi
+  for file in "${RUNTIME_FILES[@]}"; do
+    if [[ ! -f "$CANDIDATE/$file" ]] || ! cmp -s "$TMP/source/runtime/$file" "$CANDIDATE/$file"; then
+      journal FAILED_PRE_SWITCH "existing candidate differs from verified release"
+      exit 1
+    fi
+  done
+  log "reusing checksum-verified existing candidate generation $TARGET"
+else
+  rm -rf "$CANDIDATE.tmp"
+  mkdir -p "$CANDIDATE.tmp"
+  for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
+  if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
+    journal FAILED_PRE_SWITCH "cannot stage candidate generation"
+    exit 1
+  fi
 fi
 journal STAGED
 
