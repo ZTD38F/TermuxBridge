@@ -39,6 +39,13 @@ class TunnelWatchdogTests(unittest.TestCase):
         updater = Path("update_termux.sh").read_text()
         self.assertEqual(updater.count("--health.listen-addr 127.0.0.1:0"), 2)
 
+    def test_running_client_status_has_bounded_heartbeat(self):
+        text = Path("runtime/tunnel_watchdog.py").read_text()
+        self.assertIn('next_heartbeat = time.monotonic() + 60', text)
+        self.assertIn('next_heartbeat = 0.0', text)
+        self.assertIn('if time.monotonic() >= next_heartbeat:', text)
+        self.assertEqual(text.count('next_heartbeat = time.monotonic() + 60'), 2)
+
     def test_bounded_retry(self):
         self.assertEqual(retry_delay(1, "UNKNOWN"), 2)
         self.assertEqual(retry_delay(4, "NETWORK"), 16)
