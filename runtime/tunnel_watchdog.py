@@ -172,7 +172,13 @@ def run(root: Path) -> int:
         if time.monotonic() - launched_at >= 120:
             failures = 0
         failures += 1
-        reason = classify_error(log_tail(tunnel_log))
+        # Only diagnostic severity lines are classified: INFO TLS trust
+        # inventories may contain the word "certificate" without any error.
+        diagnostic = "\n".join(
+            line for line in log_tail(tunnel_log).splitlines()
+            if re.search(r"\\b(?:ERROR|WARN|FATAL|PANIC)\\b", line, flags=re.I)
+        )
+        reason = classify_error(diagnostic)
         delay = retry_delay(failures, reason)
         update_status(root, state="RETRYING" if reason != "AUTHORIZATION" else "NEEDS_ATTENTION",
                       reason=reason, exit_code=return_code,
