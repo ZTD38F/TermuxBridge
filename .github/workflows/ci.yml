@@ -20,10 +20,15 @@ jobs:
 
       - name: Compile canonical runtime
         run: |
-          python -m py_compile             runtime/bridge_server.py             runtime/gallery_bridge_tools.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py             runtime/supervisor.py
+          python -m py_compile             runtime/bridge_server.py             runtime/gallery_bridge_tools.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py             runtime/supervisor.py             runtime/recover_bridge_port.py
+
+      - name: Test safe port recovery
+        run: |
+          python -m unittest discover -s tests -v
 
       - name: Parse shell scripts
         run: |
+          bash -n runtime/gpt
           bash -n runtime/start_bridge.sh
           bash -n runtime/status_bridge.sh
           bash -n runtime/stop_bridge.sh
