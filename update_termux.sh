@@ -47,6 +47,28 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
 cleanup() {
   local rc=$?
+  # Before route switch, retire only our own exact candidate backend on failure.
+  # A failing contract check must not leak a stale listener into the next update.
+  if [[ "$rc" -ne 0 && "$SWITCHED" == 0 && -n "${CANDIDATE_PID:-}" ]]; then
+    if candidate_owned "$CANDIDATE_PID" "$TARGET" "$CANDIDATE_PORT"; then
+      kill -TERM "$CANDIDATE_PID" 2>/dev/null || true
+      log "stopped verified failed candidate pid=$CANDIDATE_PID"
+    fi
+    python - "$JOURNAL" <<'PY'
+import json,os,pathlib,sys,time
+p=pathlib.Path(sys.argv[1])
+if p.exists():
+    try:
+        d=json.loads(p.read_text())
+        if d.get("phase") == "CANDIDATE_STARTING":
+            d.update(phase="FAILED_PRE_SWITCH",failure_reason="pre-switch validation failed",updated_at=int(time.time()))
+            tmp=p.with_suffix(".tmp")
+            tmp.write_text(json.dumps(d,separators=(",",":"))+"\\n",encoding="utf-8")
+            os.replace(tmp,p)
+    except (OSError,ValueError):
+        pass
+PY
+  fi
   [[ -z "$TMP" || ! -d "$TMP" ]] || rm -rf "$TMP"
   exit "$rc"
 }
@@ -104,6 +126,25 @@ PY
 
 pid_alive() { [[ "${1:-}" =~ ^[0-9]+$ && "${1:-0}" -gt 1 ]] && kill -0 "$1" 2>/dev/null; }
 
+candidate_owned() {
+  local pid="$1" generation="$2" port="$3"
+  [[ "$pid" =~ ^[0-9]+$ && "$generation" =~ ^[0-9a-f]{40}$ && "$port" =~ ^[0-9]+$ ]] || return 1
+  python - "$pid" "$RELEASES/$generation/bridge_server.py" "$port" <<'PY'
+import os,pathlib,sys
+pid=int(sys.argv[1])
+path=pathlib.Path("/proc")/str(pid)
+try:
+    if path.stat().st_uid!=os.getuid():raise SystemExit(1)
+    args=[os.fsdecode(x) for x in (path/"cmdline").read_bytes().split(b"\\0") if x]
+    expected=str(pathlib.Path(sys.argv[2]).resolve())
+    if expected not in args:raise SystemExit(1)
+    index=args.index("--http")
+    if int(args[index+1])!=int(sys.argv[3]):raise SystemExit(1)
+except (OSError,ValueError,IndexError):
+    raise SystemExit(1)
+PY
+}
+
 backend_health() {
   local port="$1"
   python - "$port" "$BACKEND_TOKEN_FILE" <<'PY' >/dev/null 2>&1
@@ -160,10 +201,10 @@ PY
 
 recover_unfinished() {
   [[ -s "$JOURNAL" ]] || return 0
-  read -r phase prev_gen prev_port prev_pid cand_pid < <(python - "$JOURNAL" <<'PY'
+  read -r phase prev_gen prev_port prev_pid cand_pid cand_gen cand_port < <(python - "$JOURNAL" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
-print(d.get("phase",""), d.get("previous_generation",""), d.get("previous_port",0), d.get("previous_pid",0), d.get("candidate_pid",0))
+print(d.get("phase",""), d.get("previous_generation",""), d.get("previous_port",0), d.get("previous_pid",0), d.get("candidate_pid",0), d.get("candidate_generation",""), d.get("candidate_port",0))
 PY
 )
   case "$phase" in
@@ -171,7 +212,9 @@ PY
   esac
   log "recovering interrupted update phase=$phase"
   if [[ -n "$prev_gen" && "$prev_port" != 0 ]]; then write_route "$prev_gen" "$prev_port"; fi
-  if pid_alive "$cand_pid"; then kill "$cand_pid" 2>/dev/null || true; fi
+  if pid_alive "$cand_pid" && candidate_owned "$cand_pid" "$cand_gen" "$cand_port"; then
+    kill -TERM "$cand_pid" 2>/dev/null || true
+  fi
   if pid_alive "$prev_pid"; then printf '%s\n' "$prev_pid" >"$ROOT/server.pid"; fi
   python - "$JOURNAL" <<'PY'
 import json,os,pathlib,sys,time
@@ -394,8 +437,21 @@ fi
 if [[ "$PREVIOUS_PORT" == 18771 ]]; then CANDIDATE_PORT=18772; else CANDIDATE_PORT=18771; fi
 journal CANDIDATE_STARTING
 
+# Do not mistake a previously orphaned listener for the just-launched candidate.
+if python - "$CANDIDATE_PORT" <<'PY'
+import socket,sys
+with socket.socket() as sock:
+    sock.settimeout(1)
+    raise SystemExit(0 if sock.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)
+PY
+then
+  journal FAILED_PRE_SWITCH "candidate port is already occupied"
+  exit 1
+fi
+
 nohup env TERMUX_BRIDGE_ROOT="$HOME" TERMUX_BRIDGE_JOBS="$ROOT/jobs" TERMUX_BRIDGE_BACKEND_TOKEN_FILE="$BACKEND_TOKEN_FILE"   python "$CANDIDATE/bridge_server.py" --http "$CANDIDATE_PORT" >"$ROOT/logs/server-$TARGET.log" 2>&1 9>&- &
 CANDIDATE_PID=$!
+journal CANDIDATE_STARTING
 for _ in {1..40}; do pid_alive "$CANDIDATE_PID" && backend_health "$CANDIDATE_PORT" && break; sleep 0.25; done
 if ! pid_alive "$CANDIDATE_PID" || ! backend_health "$CANDIDATE_PORT"; then
   journal FAILED_PRE_SWITCH "candidate health failed"; kill "$CANDIDATE_PID" 2>/dev/null || true; exit 1
