@@ -15,7 +15,10 @@ import subprocess
 import sys
 import time
 
-from recover_bridge_port import managed_role_identity
+try:
+    from .recover_bridge_port import managed_role_identity
+except ImportError:  # standalone Termux deployment places both modules together
+    from recover_bridge_port import managed_role_identity
 
 STOP = False
 
