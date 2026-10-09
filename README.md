@@ -230,3 +230,28 @@ also accepts read-only virtual paths such as `gallery://image/123` and
 without requiring an immediate connector/tool-schema refresh.
 Cloud-only Google Photos items that are not present in Android shared storage
 are outside this local gallery source.
+
+
+## Self-maintenance and troubleshooting (v1.2.14)
+
+An Android JobScheduler job (ID 38038) runs approximately hourly and survives
+reboots, but Android may defer execution due to background restrictions,
+power saving, or unavailable network. It rechecks the verified stable GitHub
+release without automatically installing unpublished branch code.
+
+Use `termuxbridgectl maintenance-status` for timestamp, result, last successful
+check, consecutive failures, local process/health summary, and free storage.
+`CLIENT_RUNNING` proves only the local tunnel-client process is alive: it does
+**not** prove the remote ChatGPT control plane can reach Termux. Remote access
+must be tested with a real MCP call.
+
+Privacy maintenance removes the obsolete plaintext command-argument array
+from historical bridge job metadata, retaining job IDs, PIDs, timestamps,
+logs, and working directories. It does not alter running jobs or logs.
+
+The updater stages every Python helper from the checksum-verified release
+rather than relying on a fixed legacy file list. For an already-installed
+generation, a missing helper may be restored from that exact verified release;
+existing divergent immutable files are not silently overwritten.
+
+The GitHub Release workflow runs all regression tests before publishing.
