@@ -103,7 +103,7 @@ def managed_role_identity(pid: int, root: Path, role: str) -> tuple[str, ...] | 
     try:
         if proc.stat().st_uid != os.geteuid():
             return None
-        parts = [p.decode("utf-8") for p in (proc / "cmdline").read_bytes().split(b"\\0") if p]
+        parts = [p.decode("utf-8") for p in (proc / "cmdline").read_bytes().split(b"\0") if p]
         if not parts:
             return None
         root = root.resolve(strict=True)
