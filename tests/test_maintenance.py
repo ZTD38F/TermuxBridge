@@ -112,6 +112,15 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn('snapshot="$(mktemp', t)
         self.assertIn('"$snapshot" --force "$@"', t)
 
+    def test_new_runtime_helpers_are_not_dropped_by_fixed_old_updater_list(self):
+        updater = UPDATE.read_text()
+        self.assertIn('mapfile -t STAGED_RUNTIME_FILES', updater)
+        self.assertIn('for file in "${STAGED_RUNTIME_FILES[@]}"; do cp -a', updater)
+        self.assertIn('for file in "${STAGED_RUNTIME_FILES[@]}"; do', updater)
+        self.assertIn('if [[ "$CURRENT" == "$TARGET" ]]; then', updater)
+        self.assertIn('repaired missing verified runtime helper', updater)
+        self.assertIn('existing immutable runtime file differs', updater)
+
     def test_job_scheduler_hourly_persisted_and_mgmt_is_versioned(self):
         ctl = CTL.read_text()
         up = UPDATE.read_text()
