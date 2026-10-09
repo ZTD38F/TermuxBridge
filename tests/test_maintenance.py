@@ -82,6 +82,13 @@ class MaintenanceTests(unittest.TestCase):
             self.assertIn("skipped overlapping", result.stdout)
             self.assertFalse((self.root / "state/maintenance.json").exists())
 
+    def test_candidate_cleanup_uses_valid_nul_parser_and_json_newline(self):
+        source = UPDATE.read_text()
+        self.assertIn(r'split(b"\0")', source)
+        self.assertNotIn(r'split(b"\\0")', source)
+        self.assertNotIn(r'+"\\n",encoding', source)
+        self.assertIn(r'+"\n",encoding', source)
+
     def test_job_scheduler_hourly_persisted_and_mgmt_is_versioned(self):
         ctl = CTL.read_text()
         up = UPDATE.read_text()
