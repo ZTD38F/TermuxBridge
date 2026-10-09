@@ -43,3 +43,18 @@ class StartupLockTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CandidateRollbackContracts(unittest.TestCase):
+    def test_failed_pre_switch_candidate_is_retired_and_recorded(self):
+        text = Path("update_termux.sh").read_text()
+        self.assertIn('if candidate_owned "$CANDIDATE_PID" "$TARGET" "$CANDIDATE_PORT"; then', text)
+        self.assertIn('kill -TERM "$CANDIDATE_PID"', text)
+        self.assertIn('d.get("phase") == "CANDIDATE_STARTING"', text)
+        self.assertIn('journal CANDIDATE_STARTING\nfor _ in {1..40}', text)
+        self.assertIn('candidate port is already occupied', text)
+
+    def test_interrupted_candidate_recovery_checks_process_identity(self):
+        text = Path("update_termux.sh").read_text()
+        self.assertIn('candidate_owned "$cand_pid" "$cand_gen" "$cand_port"', text)
+        self.assertIn('if path.stat().st_uid!=os.getuid()', text)
+        self.assertIn('args.index("--http")', text)
