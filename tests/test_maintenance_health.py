@@ -66,6 +66,11 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(busy["result"], "BUSY")
         self.assertEqual(busy["consecutive_failures"], 0)
 
+    def test_invalid_route_port_fails_closed(self):
+        checks = h.check_services(self.root, {"port": "corrupt"})
+        self.assertFalse(checks["mcp_http"])
+        self.assertFalse(checks["supervisor_http"])
+
     def test_remove_only_legacy_plaintext_argv(self):
         name = "20261009T100000Z-18480.json"
         meta = self.root / "jobs" / name
