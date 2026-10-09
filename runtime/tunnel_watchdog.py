@@ -101,7 +101,7 @@ def run(root: Path) -> int:
     while not STOP:
         adopted = valid_adopted_pid(root)
         if adopted is not None:
-            update_status(root, state="RUNNING", reason="NONE", pid=adopted, adopted=True)
+            update_status(root, state="CLIENT_RUNNING", reason="NONE", pid=adopted, adopted=True)
             while not STOP and managed_role_identity(adopted, root, "tunnel"):
                 sleep_interruptibly(1)
             if STOP:
@@ -135,6 +135,7 @@ def run(root: Path) -> int:
             "--mcp.extra-headers", f"X-Bridge-Token: file:{router_token}",
         ]
         launched_at = time.monotonic()
+        process = None
         try:
             with tunnel_log.open("w", encoding="utf-8") as output:
                 tunnel_log.chmod(0o600)
@@ -143,7 +144,7 @@ def run(root: Path) -> int:
                                            start_new_session=True)
                 pid_file.write_text(f"{process.pid}\n", encoding="ascii")
                 pid_file.chmod(0o600)
-                update_status(root, state="RUNNING", reason="NONE", pid=process.pid,
+                update_status(root, state="CLIENT_RUNNING", reason="NONE", pid=process.pid,
                               adopted=False, attempts=failures)
                 while not STOP and process.poll() is None:
                     sleep_interruptibly(0.5)
@@ -161,7 +162,7 @@ def run(root: Path) -> int:
 
         if pid_file.is_file():
             try:
-                if int(pid_file.read_text().strip()) == process.pid:
+                if process is not None and int(pid_file.read_text().strip()) == process.pid:
                     pid_file.unlink()
             except (OSError, ValueError, UnboundLocalError):
                 pass
