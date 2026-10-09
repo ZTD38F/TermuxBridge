@@ -331,12 +331,32 @@ if [[ "$CURRENT" == "$TARGET" ]]; then
 fi
 
 CANDIDATE="$RELEASES/$TARGET"
-rm -rf "$CANDIDATE.tmp"
-mkdir -p "$CANDIDATE.tmp"
-for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
-if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
-  journal FAILED_PRE_SWITCH "candidate generation path already exists"
-  exit 1
+# Interrupted updates may have created this immutable generation before
+# updating the router. Reuse it only if each shipped runtime file matches
+# the freshly checksum-verified release. Never remove or overwrite an active
+# generation or a symlink. This is safe after an interrupted STAGED phase.
+if [[ -e "$CANDIDATE" || -L "$CANDIDATE" ]]; then
+  if [[ -L "$CANDIDATE" || ! -d "$CANDIDATE" ||
+        "$(readlink -f "$ROOT/current" 2>/dev/null || true)" == "$(readlink -f "$CANDIDATE")" ||
+        "$(readlink -f "$ROOT/previous" 2>/dev/null || true)" == "$(readlink -f "$CANDIDATE")" ]]; then
+    journal FAILED_PRE_SWITCH "candidate generation is active, linked, or invalid"
+    exit 1
+  fi
+  for file in "${RUNTIME_FILES[@]}"; do
+    if [[ ! -f "$CANDIDATE/$file" ]] || ! cmp -s "$TMP/source/runtime/$file" "$CANDIDATE/$file"; then
+      journal FAILED_PRE_SWITCH "existing candidate differs from verified release"
+      exit 1
+    fi
+  done
+  log "reusing checksum-verified existing candidate generation $TARGET"
+else
+  rm -rf "$CANDIDATE.tmp"
+  mkdir -p "$CANDIDATE.tmp"
+  for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
+  if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
+    journal FAILED_PRE_SWITCH "cannot stage candidate generation"
+    exit 1
+  fi
 fi
 journal STAGED
 
