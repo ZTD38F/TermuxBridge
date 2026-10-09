@@ -95,6 +95,62 @@ def recognizable_listener(port: int, kind: str) -> bool:
     return False
 
 
+def managed_role_identity(pid: int, root: Path, role: str) -> tuple[str, ...] | None:
+    """Identify the exact expected executable before honoring a pidfile."""
+    if pid == os.getpid() or pid <= 1:
+        return None
+    proc = Path("/proc") / str(pid)
+    try:
+        if proc.stat().st_uid != os.geteuid():
+            return None
+        parts = [p.decode("utf-8") for p in (proc / "cmdline").read_bytes().split(b"\\0") if p]
+        if not parts:
+            return None
+        root = root.resolve(strict=True)
+        if role == "tunnel":
+            if Path(parts[0]).resolve(strict=True) != (root / "bin/tunnel-client-runtime").resolve(strict=True):
+                return None
+            if len(parts) < 2 or parts[1] != "run":
+                return None
+        else:
+            if len(parts) < 2 or not Path(parts[0]).name.startswith("python"):
+                return None
+            script = Path(parts[1]).resolve(strict=True)
+            if not script.is_relative_to(root):
+                return None
+            if role == "backend":
+                if script.name != "bridge_server.py" or len(parts) != 4:
+                    return None
+                if parts[2] != "--http" or parts[3] not in {"8765", "18771", "18772"}:
+                    return None
+            elif role == "supervisor":
+                if script != root / "supervisor.py" or len(parts) != 2:
+                    return None
+            elif role == "proxy":
+                if script != root / "local_https_proxy.py" or len(parts) != 2:
+                    return None
+            else:
+                return None
+        stat = (proc / "stat").read_text(encoding="utf-8")
+        return (stat.rsplit(")", 1)[1].split()[19], *parts)
+    except (OSError, ValueError, IndexError, UnicodeError):
+        return None
+
+
+def stop_owned_pid(root: Path, pid: int, role: str) -> int:
+    identity = managed_role_identity(pid, root, role)
+    if identity is None or managed_role_identity(pid, root, role) != identity:
+        print(f"Refusing to stop unknown/stale {role} PID {pid}", file=sys.stderr)
+        return 3
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return 0
+    except PermissionError:
+        return 3
+    return 0
+
+
 def recover(root: Path, port: int, kind: str) -> int:
     if port_free(port):
         print(f"Port {port}: free")
@@ -126,9 +182,17 @@ def recover(root: Path, port: int, kind: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--kind", choices=("mcp", "proxy"), required=True)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--kind", choices=("mcp", "proxy"))
+    parser.add_argument("--stop-pid", type=int)
+    parser.add_argument("--role", choices=("tunnel", "supervisor", "backend", "proxy"))
     args = parser.parse_args()
+    if args.stop_pid is not None:
+        if args.role is None:
+            parser.error("--role is required with --stop-pid")
+        return stop_owned_pid(args.root.expanduser().resolve(), args.stop_pid, args.role)
+    if args.port is None or args.kind is None:
+        parser.error("--port and --kind are required")
     if not (1024 <= args.port <= 65535):
         parser.error("port out of range")
     return recover(args.root.expanduser().resolve(), args.port, args.kind)
