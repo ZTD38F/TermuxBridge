@@ -64,7 +64,13 @@ fi
 
 pid_alive() {
   local file="$1"
-  [[ -s "$file" ]] && kill -0 "$(<"$file")" 2>/dev/null
+  if [[ -s "$file" ]]; then
+    local pid
+    pid="$(<"$file")"
+    [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] && kill -0 "$pid" 2>/dev/null
+  else
+    return 1
+  fi
 }
 
 proxy_healthy() {
