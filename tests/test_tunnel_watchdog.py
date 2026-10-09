@@ -44,7 +44,7 @@ class TunnelWatchdogTests(unittest.TestCase):
         self.assertIn('next_heartbeat = time.monotonic() + 60', text)
         self.assertIn('next_heartbeat = 0.0', text)
         self.assertIn('if time.monotonic() >= next_heartbeat:', text)
-        self.assertEqual(text.count('next_heartbeat = time.monotonic() + 60'), 2)
+        self.assertEqual(text.count('next_heartbeat = time.monotonic() + 60'), 3)
 
     def test_bounded_retry(self):
         self.assertEqual(retry_delay(1, "UNKNOWN"), 2)
