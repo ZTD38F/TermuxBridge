@@ -36,7 +36,7 @@ RUNTIME_FILES=(
   check_phone_bridge.py
   validate_phone_integration.py
 )
-MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py)
+MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py)
 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
@@ -189,6 +189,7 @@ install_management_from_stage() {
     cp -a "$source_root/runtime/supervisor.py" "$ROOT/supervisor.py"
   fi
   cp -a "$source_root/runtime/recover_bridge_port.py" "$ROOT/recover_bridge_port.py"
+  cp -a "$source_root/runtime/tunnel_watchdog.py" "$ROOT/tunnel_watchdog.py"
   cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh"
   mkdir -p "$HOME/bin"
   cp -a "$source_root/termuxbridgectl" "$HOME/bin/termuxbridgectl"
@@ -203,7 +204,7 @@ install_management_from_stage() {
   cp -a "$source_root/runtime/gpt" "$gpt_target"
   chmod 700 "$gpt_target"
   chmod 700 "$ROOT/start_bridge.sh" "$ROOT/status_bridge.sh" "$ROOT/stop_bridge.sh" "$ROOT/update_termux.sh" "$HOME/bin/termuxbridgectl"
-  chmod 600 "$ROOT/supervisor.py" "$ROOT/recover_bridge_port.py"
+  chmod 600 "$ROOT/supervisor.py" "$ROOT/recover_bridge_port.py" "$ROOT/tunnel_watchdog.py"
 }
 
 update_supervisor() {
@@ -271,7 +272,7 @@ if [[ -z "${TARGET:-}" ]]; then
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
 [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { log "ERROR invalid target SHA"; exit 1; }
-if [[ "$CURRENT" == "$TARGET" ]]; then
+if [[ "$CURRENT" == "$TARGET" && "${1:-}" != "--force" && "${1:-}" != "--repair" ]]; then
   UPDATE_PHASE="$(python - "$JOURNAL" <<'PY'
 import json,pathlib,sys
 p=pathlib.Path(sys.argv[1])
@@ -319,6 +320,15 @@ python -m py_compile "$TMP/source/runtime/"*.py
 for file in start_bridge.sh status_bridge.sh stop_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
 bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl" "$TMP/source/runtime/gpt"
 journal VERIFIED_ARTIFACT
+
+# A previous partial update can leave the runtime at TARGET while the old
+# unversioned gpt launcher remains installed. --force must repair management
+# files without attempting to stage the same immutable runtime directory again.
+if [[ "$CURRENT" == "$TARGET" ]]; then
+  install_management_from_stage "$TMP/source"
+  log "ok repaired management files at current commit $CURRENT"
+  exit 0
+fi
 
 CANDIDATE="$RELEASES/$TARGET"
 rm -rf "$CANDIDATE.tmp"
