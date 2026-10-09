@@ -117,20 +117,26 @@ if GOOGLE_SERVER.is_file():
     _google_spec = importlib.util.spec_from_file_location("google_bridge_tools", GOOGLE_SERVER)
     if _google_spec and _google_spec.loader:
         GOOGLE_MODULE = importlib.util.module_from_spec(_google_spec)
-        _google_spec.loader.exec_module(GOOGLE_MODULE)
-        GOOGLE_TOOLS = GOOGLE_MODULE.TOOLS
-        for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
-            TOOLS.append({
-                "name": _name,
-                "title": _name.replace("_", " ").title(),
-                "description": GOOGLE_MODULE.DESCRIPTIONS[_name],
-                "inputSchema": _input_schema,
-                "annotations": {
-                    "readOnlyHint": _name in {"google_tasks_list_tasklists", "google_tasks_list_tasks", "google_keep_list_notes", "google_keep_search_notes", "google_maps_search"},
-                    "destructiveHint": _name == "google_tasks_delete_task",
-                    "openWorldHint": True,
-                },
-            })
+        try:
+            _google_spec.loader.exec_module(GOOGLE_MODULE)
+        except (ImportError, OSError):
+            # Optional Google adapter may lack its separate per-user client.
+            # Its absence must not prevent the core MCP runtime from starting.
+            GOOGLE_MODULE = None
+        if GOOGLE_MODULE is not None:
+            GOOGLE_TOOLS = GOOGLE_MODULE.TOOLS
+            for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
+                TOOLS.append({
+                    "name": _name,
+                    "title": _name.replace("_", " ").title(),
+                    "description": GOOGLE_MODULE.DESCRIPTIONS[_name],
+                    "inputSchema": _input_schema,
+                    "annotations": {
+                        "readOnlyHint": _name in {"google_tasks_list_tasklists", "google_tasks_list_tasks", "google_keep_list_notes", "google_keep_search_notes", "google_maps_search"},
+                        "destructiveHint": _name == "google_tasks_delete_task",
+                        "openWorldHint": True,
+                    },
+                })
 
 
 
@@ -301,6 +307,7 @@ def bridge_diagnostics():
                 extra += 1
         except (OSError, ValueError): pass
     output["unmanaged_tunnel_instances"] = extra
+    output["optional_integrations"] = {"phone": PHONE_MODULE is not None, "google": GOOGLE_MODULE is not None, "gallery": GALLERY_MODULE is not None}
     return output
 
 
