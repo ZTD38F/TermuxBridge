@@ -301,18 +301,21 @@ recover_unfinished
 CURRENT="$(cat "$STATE" 2>/dev/null || true)"
 TARGET_TAG=""
 if [[ "$CHANNEL" == "stable" ]]; then
-  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
-  if [[ -n "$RELEASE_JSON" ]]; then
-    read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
-    if [[ -n "$TARGET_TAG" && "$RELEASE_DRAFT" == false && "$RELEASE_PRERELEASE" == false ]]; then
-      TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
-        python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
-    else
-      TARGET_TAG=""
-    fi
+  # Production maintenance accepts published checksum-verified releases only.
+  # Never silently fall back to an unsigned/unpublished branch archive.
+  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest")" || {
+    log "ERROR stable release metadata unavailable"
+    exit 1
+  }
+  read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
+  if [[ ! "$TARGET_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$RELEASE_DRAFT" != false || "$RELEASE_PRERELEASE" != false ]]; then
+    log "ERROR latest stable release metadata invalid"
+    exit 1
   fi
-fi
-if [[ -z "${TARGET:-}" ]]; then
+  TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
+    python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+else
+  # Non-stable channels are explicit development mode, not automatic maintenance.
   TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$CHANNEL" |
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
