@@ -97,6 +97,18 @@ class MaintenanceTests(unittest.TestCase):
         self.assertNotIn('if [[ -z "${TARGET:-}" ]]', source)
         self.assertIn('sha256sum -c source.sha256', source)
 
+    def test_running_updater_isolated_from_atomic_install(self):
+        u = UPDATE.read_text()
+        m = MAINTAIN.read_text()
+        t = CTL.read_text()
+        self.assertIn('mv -f "$ROOT/update_termux.sh.next" "$ROOT/update_termux.sh"', u)
+        self.assertIn('mv -f "$ROOT/maintain_bridge.sh.next" "$ROOT/maintain_bridge.sh"', u)
+        self.assertNotIn('cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh"', u)
+        self.assertIn('updater_snapshot="$(mktemp', m)
+        self.assertIn('"$updater_snapshot" 8>&-', m)
+        self.assertIn('snapshot="$(mktemp', t)
+        self.assertIn('"$snapshot" --force "$@"', t)
+
     def test_job_scheduler_hourly_persisted_and_mgmt_is_versioned(self):
         ctl = CTL.read_text()
         up = UPDATE.read_text()

@@ -45,7 +45,12 @@ if [[ -x "$ROOT/update_termux.sh" ]]; then
   # Do not force a same-version reinstall every hour.
   # The transactional updater checks the latest stable published release,
   # validates SHA-256 and MCP schemas, and does not restart a healthy tunnel.
-  "$ROOT/update_termux.sh" 8>&- >>"$LOG" 2>&1 || update_rc=$?
+  # Execute a private snapshot: an updater must never overwrite its own script.
+  updater_snapshot="$(mktemp "$ROOT/state/.updater-run.XXXXXX")"
+  cp "$ROOT/update_termux.sh" "$updater_snapshot"
+  chmod 700 "$updater_snapshot"
+  "$updater_snapshot" 8>&- >>"$LOG" 2>&1 || update_rc=$?
+  rm -f "$updater_snapshot"
 else
   update_rc=127
   echo "Verified update script is unavailable" >>"$LOG"
