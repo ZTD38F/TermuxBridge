@@ -235,12 +235,12 @@ install_management_from_stage() {
   cp -a "$source_root/runtime/tunnel_watchdog.py" "$ROOT/tunnel_watchdog.py"
   # Atomically replace scripts that may currently be executing.
   # cp directly onto a running bash script can corrupt its remaining commands.
-  cp -a "$source_root/runtime/maintain_bridge.sh" "$ROOT/maintain_bridge.sh.next.$"
-  chmod 700 "$ROOT/maintain_bridge.sh.next.$"
-  mv -f "$ROOT/maintain_bridge.sh.next.$" "$ROOT/maintain_bridge.sh"
-  cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh.next.$"
-  chmod 700 "$ROOT/update_termux.sh.next.$"
-  mv -f "$ROOT/update_termux.sh.next.$" "$ROOT/update_termux.sh"
+  cp -a "$source_root/runtime/maintain_bridge.sh" "$ROOT/maintain_bridge.sh.next"
+  chmod 700 "$ROOT/maintain_bridge.sh.next"
+  mv -f "$ROOT/maintain_bridge.sh.next" "$ROOT/maintain_bridge.sh"
+  cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh.next"
+  chmod 700 "$ROOT/update_termux.sh.next"
+  mv -f "$ROOT/update_termux.sh.next" "$ROOT/update_termux.sh"
   mkdir -p "$HOME/bin"
   cp -a "$source_root/termuxbridgectl" "$HOME/bin/termuxbridgectl"
   # Replace the legacy gpt command with the versioned repository launcher.
