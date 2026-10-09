@@ -1,0 +1,12 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# Stable, repository-managed entry point for TermuxBridge.
+set -Eeuo pipefail
+ROOT="${TERMUXBRIDGE_ROOT:-$HOME/termux-mcp-bridge}"
+
+if [[ ! -x "$ROOT/start_bridge.sh" ]]; then
+  echo "ERROR: TermuxBridge startup script is missing: $ROOT/start_bridge.sh" >&2
+  echo "Repair the installation with termuxbridgectl update-now." >&2
+  exit 1
+fi
+
+exec "$ROOT/start_bridge.sh"

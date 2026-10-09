@@ -64,6 +64,32 @@ gpt
 
 The `gpt` command should establish/re-establish the bridge connection without requiring the user to remember internal start/status/tunnel commands.
 
+The command is now shipped as `runtime/gpt` and installed to
+`$PREFIX/bin/gpt` by the transactional updater. The previous local command
+is preserved once at `~/termux-mcp-bridge/gpt.previous`. This prevents
+obsolete launcher-side checks of a token-protected `/healthz` endpoint.
+
+### Startup self-healing
+
+`gpt` probes the authenticated supervisor and backend, reuses a fully healthy
+stack, and performs a controlled full restart if necessary. During **full
+startup only**, `recover_bridge_port.py` may send **SIGTERM** to exactly one
+same-UID, path-verified TermuxBridge listener on `8765` or `8877`, and only
+after its loopback server fingerprint matches. It refuses unknown or ambiguous
+listeners, PID-reused processes, other users' processes and SIGKILL.
+`stop_bridge.sh` also checks executable identity before honoring any PID file.
+
+An HTTP `403` from the legacy backend's unauthenticated `/healthz` is
+**expected**: backend checks use `X-Bridge-Backend-Token`, supervisor checks
+use `X-Bridge-Token`. Do not make MCP authorization optional to work around
+a launcher bug. Errors from the remote control plane (expired credentials,
+denied access) cannot be safely resolved by rotating tokens automatically;
+re-authorize the connection using the provider's supported flow.
+
+If a pre-update `gpt` binary still uses the obsolete health probe, perform
+one verified update with `termuxbridgectl update-now` to install the managed
+launcher.
+
 ## Automatic updates
 
 Automatic update is a built-in TermuxBridge product function. Ordinary runtime
