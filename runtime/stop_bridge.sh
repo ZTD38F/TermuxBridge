@@ -7,7 +7,7 @@ stop_pidfile() {
   if [[ -s "$file" ]]; then
     local pid
     pid="$(<"$file")"
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] && kill -0 "$pid" 2>/dev/null; then
       # The pidfile can outlive its process. Refuse to signal a recycled PID,
       # even if it happens to be owned by the Termux Unix user.
       if [[ -f "$ROOT/recover_bridge_port.py" ]] &&
