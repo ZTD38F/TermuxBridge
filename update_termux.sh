@@ -41,7 +41,7 @@ MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 exec 9>"$LOCK"
-flock -n 9 || exit 0
+flock -n 9 || { echo "Bridge update is already in progress; inspect termuxbridgectl update-status" >&2; exit 75; }
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
@@ -326,6 +326,7 @@ journal VERIFIED_ARTIFACT
 # files without attempting to stage the same immutable runtime directory again.
 if [[ "$CURRENT" == "$TARGET" ]]; then
   install_management_from_stage "$TMP/source"
+  journal COMMITTED
   log "ok repaired management files at current commit $CURRENT"
   exit 0
 fi
