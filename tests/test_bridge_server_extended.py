@@ -16,12 +16,14 @@ class ExtendedTermuxToolsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.old_root, self.old_jobs = b.ROOT, b.JOBS
+        self.old_root, self.old_jobs, self.old_allowed_roots = b.ROOT, b.JOBS, b.ALLOWED_ROOTS
         b.ROOT = self.root
         b.JOBS = self.root / "jobs"
+        b.ALLOWED_ROOTS = (self.root,)
 
     def tearDown(self):
         b.ROOT, b.JOBS = self.old_root, self.old_jobs
+        b.ALLOWED_ROOTS = self.old_allowed_roots
         self.tmp.cleanup()
 
     def test_command_arg_limit_and_output_limit(self):
