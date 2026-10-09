@@ -74,7 +74,7 @@ def authenticated_local_health(root: Path, port: int, header: str, key_file: str
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(request, timeout=3) as response:
             body = json.load(response)
-        return body.get("ok") is True and body.get("pid") == expected_pid
+        return isinstance(body, dict) and body.get("ok") is True and body.get("pid") == expected_pid
     except (OSError, ValueError, KeyError, TimeoutError):
         return False
 
@@ -83,8 +83,12 @@ def check_services(root: Path, route: dict) -> dict[str, bool]:
     result = owned_processes(root)
     result["supervisor_http"] = result["supervisor"] and authenticated_local_health(
         root, 8765, "X-Bridge-Token", "router_token", pid_file(root, "supervisor.pid"))
+    try:
+        port = int(route.get("port", 0) or 0)
+    except (ValueError, TypeError):
+        port = 0
     result["mcp_http"] = result["mcp"] and authenticated_local_health(
-        root, int(route.get("port", 0) or 0), "X-Bridge-Backend-Token",
+        root, port, "X-Bridge-Backend-Token",
         "backend_token", pid_file(root, "server.pid"))
     return result
 
@@ -96,7 +100,7 @@ def scrub_legacy_job_args(root: Path) -> int:
     Does not alter logs or running processes.
     """
     folder = root / "jobs"
-    if not folder.is_dir():
+    if not folder.is_dir() or folder.is_symlink():
         return 0
     changed = 0
     for file in folder.iterdir():
