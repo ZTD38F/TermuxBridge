@@ -90,6 +90,34 @@ If a pre-update `gpt` binary still uses the obsolete health probe, perform
 one verified update with `termuxbridgectl update-now` to install the managed
 launcher.
 
+### Startup lock and interrupted-update recovery (v1.2.5)
+
+Startup uses a new `.start.v2.lock`, because older processes may continue
+holding the original `.start.lock` through inherited file descriptors. Every
+new daemon explicitly closes descriptor 9 before backgrounding, preventing
+stale daemon processes from locking out future `gpt` invocations.
+
+An interrupted runtime update at `STAGED` can be resumed: a previously
+staged immutable generation is reused only after it is verified byte-for-byte
+against the signed/checksummed release files. Neither an active nor
+different-generation directory is overwritten. A busy updater or startup
+reports exit code 75 rather than silently indicating success.
+
+If your terminal prints `Bridge start is already in progress` and reports
+`UPDATE phase STAGED`, install this release using the standard verified
+updater and allow it to finish before rerunning `gpt`:
+
+```bash
+bash ~/termux-mcp-bridge/update_termux.sh --force
+hash -r
+gpt
+termuxbridgectl status
+```
+
+Do not delete `.start.lock` or `.update.lock` and do not kill unrelated
+processes. If the update fails, inspect only the sanitized status first;
+never share raw secret files or credentials.
+
 ### Tunnel recovery (v1.2.4)
 
 The local MCP service, router and HTTPS proxy have **separate** lifecycle from
