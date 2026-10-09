@@ -36,7 +36,7 @@ RUNTIME_FILES=(
   check_phone_bridge.py
   validate_phone_integration.py
 )
-MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py)
+MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py)
 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
@@ -188,11 +188,22 @@ install_management_from_stage() {
   if [[ ! -f "$ROOT/supervisor.py" ]]; then
     cp -a "$source_root/runtime/supervisor.py" "$ROOT/supervisor.py"
   fi
+  cp -a "$source_root/runtime/recover_bridge_port.py" "$ROOT/recover_bridge_port.py"
   cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh"
   mkdir -p "$HOME/bin"
   cp -a "$source_root/termuxbridgectl" "$HOME/bin/termuxbridgectl"
+  # Replace the legacy gpt command with the versioned repository launcher.
+  # Keep one backup of the previous local command for manual rollback.
+  local gpt_target="${PREFIX:-/data/data/com.termux/files/usr}/bin/gpt"
+  mkdir -p "$(dirname "$gpt_target")"
+  if [[ -f "$gpt_target" && ! -e "$ROOT/gpt.previous" ]]; then
+    cp -a "$gpt_target" "$ROOT/gpt.previous"
+    chmod 600 "$ROOT/gpt.previous"
+  fi
+  cp -a "$source_root/runtime/gpt" "$gpt_target"
+  chmod 700 "$gpt_target"
   chmod 700 "$ROOT/start_bridge.sh" "$ROOT/status_bridge.sh" "$ROOT/stop_bridge.sh" "$ROOT/update_termux.sh" "$HOME/bin/termuxbridgectl"
-  chmod 600 "$ROOT/supervisor.py"
+  chmod 600 "$ROOT/supervisor.py" "$ROOT/recover_bridge_port.py"
 }
 
 update_supervisor() {
@@ -260,7 +271,22 @@ if [[ -z "${TARGET:-}" ]]; then
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
 [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { log "ERROR invalid target SHA"; exit 1; }
-if [[ "$CURRENT" == "$TARGET" && "${1:-}" != "--force" ]]; then log "ok already current $CURRENT"; exit 0; fi
+if [[ "$CURRENT" == "$TARGET" ]]; then
+  UPDATE_PHASE="$(python - "$JOURNAL" <<'PY'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+print(json.loads(p.read_text()).get("phase","") if p.exists() else "")
+PY
+)"
+  if [[ "$UPDATE_PHASE" != "COMMITTED" ]]; then
+    ACTIVE_PORT="$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$ROUTE")"
+    backend_health "$ACTIVE_PORT"
+    mcp_contract "http://127.0.0.1:8765/mcp" "X-Bridge-Token" "$ROUTER_TOKEN_FILE" >/dev/null
+    journal COMMITTED
+  fi
+  log "ok already current $CURRENT"
+  exit 0
+fi
 
 TMP="$(mktemp -d "$HOME/.cache/termuxbridge-update.XXXXXX")"
 mkdir -p "$TMP/source"
@@ -286,19 +312,22 @@ journal DOWNLOADED
 for file in "${RUNTIME_FILES[@]}" "${MANAGEMENT_FILES[@]}"; do
   [[ -f "$TMP/source/runtime/$file" ]] || { journal FAILED_PRE_SWITCH "missing runtime/$file"; exit 1; }
 done
-[[ -f "$TMP/source/update_termux.sh" && -f "$TMP/source/termuxbridgectl" ]] || { journal FAILED_PRE_SWITCH "missing management scripts"; exit 1; }
+[[ -f "$TMP/source/update_termux.sh" && -f "$TMP/source/termuxbridgectl" && -f "$TMP/source/runtime/gpt" ]] || { journal FAILED_PRE_SWITCH "missing management scripts"; exit 1; }
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
 
 python -m py_compile "$TMP/source/runtime/"*.py
 for file in start_bridge.sh status_bridge.sh stop_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
-bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl"
+bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl" "$TMP/source/runtime/gpt"
 journal VERIFIED_ARTIFACT
 
 CANDIDATE="$RELEASES/$TARGET"
 rm -rf "$CANDIDATE.tmp"
 mkdir -p "$CANDIDATE.tmp"
 for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
-mv "$CANDIDATE.tmp" "$CANDIDATE"
+if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
+  journal FAILED_PRE_SWITCH "candidate generation path already exists"
+  exit 1
+fi
 journal STAGED
 
 ensure_seamless_topology
@@ -383,6 +412,8 @@ ln -sfn "$CANDIDATE" "$ROOT/current"
 printf '%s\n' "$TARGET" >"$STATE"
 printf '%s\n' "$CANDIDATE_PID" >"$ROOT/server.pid"
 install_management_from_stage "$TMP/source"
+# After the atomic pointer switch, COMMITTED must describe the active generation.
+CURRENT="$TARGET"
 journal COMMITTED
 
 # Old backend retirement happens after commit. A self-hosted MCP update must

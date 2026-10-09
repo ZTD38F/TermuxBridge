@@ -138,6 +138,17 @@ fi
 "$BRIDGE_DIR/stop_bridge.sh" >/dev/null 2>&1 || true
 rm -f "$PIDFILE" "$SERVER_PIDFILE" "$SUPERVISOR_PIDFILE" "$PROXY_PIDFILE"
 
+# Recover only our own identifiable stale listeners. Authentication failures
+# on a legacy backend must not be mistaken for an empty TCP port; equally,
+# an unknown process must never be killed just to make startup succeed.
+# This applies to manual/reboot full startup, NEVER seamless runtime updates.
+[[ -f "$BRIDGE_DIR/recover_bridge_port.py" ]] || {
+  echo "ERROR: recovery helper missing; refusing unsafe restart" >&2
+  exit 1
+}
+python "$BRIDGE_DIR/recover_bridge_port.py" --root "$BRIDGE_DIR" --port 8765 --kind mcp
+python "$BRIDGE_DIR/recover_bridge_port.py" --root "$BRIDGE_DIR" --port 8877 --kind proxy
+
 cleanup_partial() {
   "$BRIDGE_DIR/stop_bridge.sh" >/dev/null 2>&1 || true
 }
