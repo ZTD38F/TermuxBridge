@@ -31,6 +31,8 @@ def on_signal(_signum, _frame):
 def classify_error(message: str) -> str:
     """Classify only; NEVER include raw logs or secrets in status JSON."""
     text = message.lower()
+    if re.search(r"address already in use|bind:|listen tcp .*:.*:.*", text):
+        return "PORT_CONFLICT"
     if re.search(r"\b(?:401|403)\b|unauthori[sz]ed|invalid (?:api )?(?:key|token)|authentication failed|permission denied|forbidden", text):
         return "AUTHORIZATION"
     if re.search(r"certificate|x509|tls handshake|unknown authority", text):
@@ -141,6 +143,8 @@ def run(root: Path) -> int:
 
         argv = [
             str(client), "run",
+            # Avoid conflict with applications using the default 8080 health port.
+            "--health.listen-addr", "127.0.0.1:0",
             "--control-plane.api-key", f"file:{key}",
             "--mcp.server-url", "http://127.0.0.1:8765/mcp",
             "--mcp.extra-headers", f"X-Bridge-Token: file:{router_token}",

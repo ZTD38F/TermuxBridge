@@ -516,6 +516,7 @@ if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
   TRANSPORT_LOG="$ROOT/logs/tunnel-$PINNED_TUNNEL.log"
 
   nohup "$VERSIONED" run \
+    --health.listen-addr 127.0.0.1:0 \
     --control-plane.api-key "file:$KEYFILE" \
     --mcp.server-url http://127.0.0.1:8765/mcp \
     --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
@@ -535,6 +536,7 @@ if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
   if ! pid_alive "$NEW_TUNNEL_PID"; then
     log "ERROR transport candidate failed after handoff; restoring previous transport"
     nohup "$ROOT/bin/tunnel-client-runtime" run \
+      --health.listen-addr 127.0.0.1:0 \
       --control-plane.api-key "file:$KEYFILE" \
       --mcp.server-url http://127.0.0.1:8765/mcp \
       --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
