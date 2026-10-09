@@ -207,6 +207,11 @@ for _ in {1..20}; do
 done
 pid_alive "$SUPERVISOR_PIDFILE" && router_health || { echo "ERROR: bridge supervisor failed"; exit 1; }
 
-start_tunnel_watchdog
+if ! start_tunnel_watchdog; then
+  # Failure to launch the remote transport must not tear down a working MCP.
+  trap - ERR INT TERM
+  echo "WARNING: local Bridge is healthy but tunnel recovery did not start." >&2
+  exit 4
+fi
 trap - ERR INT TERM
 echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."
