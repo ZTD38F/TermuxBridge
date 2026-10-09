@@ -44,6 +44,14 @@ def classify_error(message: str) -> str:
     return "UNKNOWN"
 
 
+def diagnostic_lines(log_text: str) -> str:
+    """Only retain severity-tagged diagnostics; skip informational TLS inventories."""
+    return "\n".join(
+        line for line in log_text.splitlines()
+        if re.search(r"\b(?:ERROR|WARN|FATAL|PANIC)\b", line, flags=re.I)
+    )
+
+
 def log_tail(path: Path, size: int = 32768) -> str:
     try:
         with path.open("rb") as file:
@@ -178,10 +186,7 @@ def run(root: Path) -> int:
         failures += 1
         # Only diagnostic severity lines are classified: INFO TLS trust
         # inventories may contain the word "certificate" without any error.
-        diagnostic = "\n".join(
-            line for line in log_tail(tunnel_log).splitlines()
-            if re.search(r"\\b(?:ERROR|WARN|FATAL|PANIC)\\b", line, flags=re.I)
-        )
+        diagnostic = diagnostic_lines(log_tail(tunnel_log))
         reason = classify_error(diagnostic)
         delay = retry_delay(failures, reason)
         update_status(root, state="RETRYING" if reason != "AUTHORIZATION" else "NEEDS_ATTENTION",
