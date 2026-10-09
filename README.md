@@ -90,6 +90,40 @@ If a pre-update `gpt` binary still uses the obsolete health probe, perform
 one verified update with `termuxbridgectl update-now` to install the managed
 launcher.
 
+### Tunnel recovery (v1.2.4)
+
+The local MCP service, router and HTTPS proxy have **separate** lifecycle from
+the remote ChatGPT control-plane tunnel. The managed `gpt` launcher no longer
+tears down a healthy local MCP merely because the tunnel client exited.
+
+A separate `tunnel_watchdog.py` adopts an already running, verified tunnel
+process or starts a new one. Unexpected tunnel exits trigger exponential,
+bounded reconnect (up to five minutes between attempts), while authorization
+failures enter `NEEDS_ATTENTION` with a five-minute retry interval. No tokens
+are rotated automatically, and the watchdog never kills unrelated processes.
+
+`termuxbridgectl status` reports the watchdog and a **sanitized** tunnel
+state/reason without printing sensitive logs. `CLIENT_RUNNING` denotes an
+alive local tunnel client, **not** proof that ChatGPT can reach the device.
+Actual remote connectivity must be verified with a live MCP tool call.
+
+A forced update to the currently installed commit now revalidates the release
+and reinstalls the managed launcher and startup scripts, rather than silently
+keeping a legacy `gpt` command:
+
+```bash
+termuxbridgectl update-now
+hash -r
+type -a gpt
+gpt
+termuxbridgectl status
+```
+
+If an old launcher still prints `🔄 GPT Bridge...`, it is not the managed
+`runtime/gpt` from this repository. Inspect `type -a gpt` for shell aliases
+or other PATH entries; prefer the canonical `$PREFIX/bin/gpt` installation.
+Do not paste the raw tunnel log or secret files into support chats.
+
 ## Automatic updates
 
 Automatic update is a built-in TermuxBridge product function. Ordinary runtime

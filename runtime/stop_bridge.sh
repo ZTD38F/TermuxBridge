@@ -23,6 +23,8 @@ stop_pidfile() {
 }
 
 # Manual/full shutdown only. Seamless runtime updates do not call this script.
+# Stop the supervisor first; otherwise it would restart the tunnel immediately.
+stop_pidfile "$ROOT/watchdog.pid" watchdog
 stop_pidfile "$ROOT/bridge.pid" tunnel
 stop_pidfile "$ROOT/supervisor.pid" supervisor
 stop_pidfile "$ROOT/server.pid" backend

@@ -16,6 +16,7 @@ pid_line() {
 }
 
 [[ -x "$CLIENT" ]] || { echo "NOT INSTALLED: tunnel-client-runtime is missing"; exit 1; }
+pid_line "TUNNEL WATCHDOG" "$BRIDGE_DIR/watchdog.pid"
 pid_line "TUNNEL" "$BRIDGE_DIR/bridge.pid"
 pid_line "SUPERVISOR" "$BRIDGE_DIR/supervisor.pid"
 pid_line "MCP" "$BRIDGE_DIR/server.pid"
@@ -37,6 +38,19 @@ d=json.load(open(sys.argv[1]))
 for k in ("transaction_id","update_kind","phase","current_generation","candidate_generation","previous_generation","failure_reason","rollback_reason","updated_at"):
     if d.get(k) not in (None,""):
         print("UPDATE", k, d[k])
+PY
+fi
+
+if [[ -s "$BRIDGE_DIR/state/tunnel_status.json" ]]; then
+  python - "$BRIDGE_DIR/state/tunnel_status.json" <<'PY'
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    for key in ("state","reason","exit_code","attempts","retry_seconds","timestamp"):
+        if key in d:
+            print("TUNNEL",key,d[key])
+except (OSError,ValueError):
+    print("TUNNEL status unavailable")
 PY
 fi
 

@@ -133,6 +133,11 @@ def managed_role_identity(pid: int, root: Path, role: str) -> tuple[str, ...] | 
             elif role == "proxy":
                 if script != root / "local_https_proxy.py" or len(parts) != 2:
                     return None
+            elif role == "watchdog":
+                if script != root / "tunnel_watchdog.py" or len(parts) != 3:
+                    return None
+                if Path(parts[2]).resolve(strict=True) != root:
+                    return None
             else:
                 return None
         stat = (proc / "stat").read_text(encoding="utf-8")
@@ -189,8 +194,13 @@ def main() -> int:
     parser.add_argument("--port", type=int)
     parser.add_argument("--kind", choices=("mcp", "proxy"))
     parser.add_argument("--stop-pid", type=int)
-    parser.add_argument("--role", choices=("tunnel", "supervisor", "backend", "proxy"))
+    parser.add_argument("--check-pid", type=int)
+    parser.add_argument("--role", choices=("tunnel", "supervisor", "backend", "proxy", "watchdog"))
     args = parser.parse_args()
+    if args.check_pid is not None:
+        if args.role is None:
+            parser.error("--role is required with --check-pid")
+        return 0 if managed_role_identity(args.check_pid, args.root.expanduser().resolve(), args.role) else 3
     if args.stop_pid is not None:
         if args.role is None:
             parser.error("--role is required with --stop-pid")
