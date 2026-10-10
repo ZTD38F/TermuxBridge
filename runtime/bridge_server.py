@@ -32,7 +32,7 @@ JOBS = Path(os.environ.get("TERMUX_BRIDGE_JOBS", ROOT / ".termux-mcp-bridge" / "
 MAX_READ = 2_000_000
 MAX_OUTPUT = 1_000_000
 COMMAND_MODE = os.environ.get("TERMUX_BRIDGE_COMMAND_MODE", "open").lower()
-BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path.home() / "termux-mcp-bridge" / "secrets" / "backend_token")).resolve()
+BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")) / "secrets" / "backend_token")).resolve()
 
 
 def _backend_token() -> str:
@@ -282,7 +282,7 @@ def job_alive(meta):
 
 
 def bridge_diagnostics():
-    root = Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge"))
+    root = Path(os.environ.get("TERMUXBRIDGE_ROOT", Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge"))))
     output = {"version": BRIDGE_VERSION}
     for section, keys in (("route", ("generation", "port")),
                           ("update", ("phase", "update_kind", "current_generation")),
@@ -347,16 +347,16 @@ def call(name, a):
         return ADAPTERS.status()
     if name == "ecosystem_dashboard":
         return ecosystem_core.dashboard(
-            Path.home() / "termux-mcp-bridge", adapters=ADAPTERS.status(),
+            Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")), adapters=ADAPTERS.status(),
             html_file=bool(a.get("html",False)))
     if name == "ecosystem_backup_create":
-        return ecosystem_core.backup_create(Path.home() / "termux-mcp-bridge")
+        return ecosystem_core.backup_create(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")))
     if name == "ecosystem_backup_list":
-        return ecosystem_core.backup_list(Path.home() / "termux-mcp-bridge")
+        return ecosystem_core.backup_list(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")))
     if name == "ecosystem_backup_verify":
-        return ecosystem_core.backup_verify(Path.home() / "termux-mcp-bridge", a["name"])
+        return ecosystem_core.backup_verify(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")), a["name"])
     if name == "ecosystem_backup_restore":
-        return ecosystem_core.backup_restore(Path.home() / "termux-mcp-bridge",
+        return ecosystem_core.backup_restore(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")),
                                               a["name"], confirm=bool(a.get("confirm",False)))
     if name == "ecosystem_chaos_test":
         return ecosystem_core.chaos_selftest()
