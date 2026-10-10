@@ -240,8 +240,8 @@ def attempt(root=None):
                             temp.unlink()
                         temp.symlink_to(target)
                         os.replace(temp,root/name)
-                    for name,value in (("source_commit",current+"\\n"),
-                                       ("server.pid",str(old_pid)+"\\n")):
+                    for name,value in (("source_commit",current+"\n"),
+                                       ("server.pid",str(old_pid)+"\n")):
                         tmp=root/("."+name+".rollback-revert")
                         tmp.write_text(value)
                         tmp.chmod(0o600)
