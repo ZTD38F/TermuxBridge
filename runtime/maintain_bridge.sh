@@ -72,7 +72,10 @@ if [[ -f "$rollback_script" ]]; then
   rollback_out="$(python "$rollback_script" 2>>"$LOG")" || rollback_rc=$?
   [[ -z "$rollback_out" ]] || printf '%s\n' "$rollback_out" >>"$LOG"
   if [[ "$rollback_out" == *'"ROLLED_BACK"'* ]]; then
-    # Refresh diagnostics after the route and generation are switched.
+    # After successful rollback re-evaluate the actual recovered service.
+    health_rc=0
+    start_rc=0
+    update_rc=0
     python "$ROOT/current/maintenance_health.py" "$ROOT" 0 0 || health_rc=$?
   fi
 fi
