@@ -52,8 +52,7 @@ def queue_db(root=None):
             exit_code INTEGER,
             attempts INTEGER NOT NULL DEFAULT 0,
             cancel_requested INTEGER NOT NULL DEFAULT 0,
-            result_code TEXT,
-            output_tail TEXT
+            result_code TEXT
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS q_pending ON queue(state,priority DESC,created_at)")
         db.commit()
@@ -140,7 +139,7 @@ def retry(jid, *, root=None):
     if item["state"] not in ("NEEDS_REVIEW","FAILED","CANCELLED"):
         raise ValueError("retry only for NEEDS_REVIEW, FAILED, CANCELLED")
     with contextlib.closing(queue_db(root)) as db:
-        db.execute("UPDATE queue SET state='QUEUED',cancel_requested=0,exit_code=NULL,result_code=NULL,output_tail=NULL,updated_at=? WHERE id=? AND state=?",
+        db.execute("UPDATE queue SET state='QUEUED',cancel_requested=0,exit_code=NULL,result_code=NULL,updated_at=? WHERE id=? AND state=?",
                    (int(time.time()),jid,item["state"]))
         db.commit()
     return status(jid,root=root)
@@ -173,8 +172,8 @@ def finish(jid, result, *, root=None):
         now=int(time.time())
         state="CANCELLED" if result.get("cancelled") else "FAILED" if result.get("exit_code") != 0 or result.get("timed_out") else "DONE"
         error="CANCELLED" if state=="CANCELLED" else "TIMEOUT" if result.get("timed_out") else "NONZERO_EXIT" if state=="FAILED" else "NONE"
-        db.execute("UPDATE queue SET state=?,exit_code=?,result_code=?,output_tail=?,finished_at=?,updated_at=? WHERE id=? AND state='RUNNING'",
-                   (state,result.get("exit_code"),error,result.get("output","")[-2048:],now,now,jid))
+        db.execute("UPDATE queue SET state=?,exit_code=?,result_code=?,finished_at=?,updated_at=? WHERE id=? AND state='RUNNING'",
+                   (state,result.get("exit_code"),error,now,now,jid))
         db.commit()
 
 
