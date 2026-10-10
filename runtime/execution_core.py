@@ -22,11 +22,19 @@ DEFAULT_OUTPUT = 256000
 MAX_OUTPUT = 1000000
 
 
-def _limits(cpu_seconds: int):
-    def apply():
-        # Android's bionic linker may abort on RLIMIT_AS even for tiny tools.
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 2))
-    return apply
+# Execute the CPU-limit setup in a fresh, single-threaded child interpreter.
+# Android/Termux Python 3.14 may fail preexec_fn in a worker thread. prlimit()
+# is blocked by Android SELinux even for child PIDs, so neither is viable.
+# execvpe replaces the shim process; its PID/process group remain unchanged.
+_CPU_LIMIT_SHIM = (
+    "import os,resource,sys;"
+    "n=int(sys.argv[1]);"
+    "hard=resource.getrlimit(resource.RLIMIT_CPU)[1];"
+    "soft=min(n,hard) if hard!=resource.RLIM_INFINITY else n;"
+    "ceiling=min(n+2,hard) if hard!=resource.RLIM_INFINITY else n+2;"
+    "resource.setrlimit(resource.RLIMIT_CPU,(soft,ceiling));"
+    "os.execvpe(sys.argv[2],sys.argv[2:],os.environ)"
+)
 
 
 def _group_rss_bytes(pgid: int) -> int:
@@ -90,10 +98,11 @@ def execute(argv, cwd, timeout=30, max_output_chars=DEFAULT_OUTPUT,
     memory_exceeded = False
     try:
         proc = subprocess.Popen(
-            argv, cwd=cwd, stdin=subprocess.DEVNULL,
+            [__import__("sys").executable, "-c", _CPU_LIMIT_SHIM,
+             str(cpu_seconds), *argv],
+            cwd=cwd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             start_new_session=True,
-            preexec_fn=_limits(cpu_seconds),
             close_fds=True,
             env=os.environ.copy())
         assert proc.stdout is not None

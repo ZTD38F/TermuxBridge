@@ -25,6 +25,38 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(len(out["output"]),73)
         self.assertTrue(out["truncated"])
 
+    def test_subprocess_cpu_limit_inside_background_thread(self):
+        # This is the same execution context as queue_core.process_next().
+        # preexec_fn is unsafe in a multithreaded Python MCP backend.
+        import threading
+        observed={}
+        def run_in_thread():
+            observed["result"]=e.execute([os.sys.executable,"-c","print('THREAD_OK')"],
+                                         os.getcwd(),timeout=8,cpu_seconds=2)
+        worker=threading.Thread(target=run_in_thread)
+        worker.start()
+        worker.join(timeout=12)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(observed["result"]["exit_code"],0,observed)
+        self.assertIn("THREAD_OK",observed["result"]["output"])
+
+    def test_nested_cpu_limit_cannot_raise_inherited_hard_limit(self):
+        # Termux MCP callers already inherit an RLIMIT_CPU. A nested queue
+        # job must clamp its requested budget rather than abort on setrlimit.
+        import subprocess
+        program = (
+            "import os,resource,sys;"
+            "resource.setrlimit(resource.RLIMIT_CPU,(5,7));"
+            "from runtime import execution_core as e;"
+            "r=e.execute([sys.executable,'-c','print(123)'],os.getcwd(),"
+            "timeout=30,cpu_seconds=30);"
+            "assert r['exit_code']==0,r;"
+            "assert '123' in r['output'],r"
+        )
+        p=subprocess.run([os.sys.executable,"-c",program],
+                         cwd=os.getcwd(),capture_output=True,text=True,timeout=15)
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+
     def test_timeout_terminates_child_process(self):
         out=e.execute([os.sys.executable,"-c","import time;time.sleep(5)"],
                       os.getcwd(),timeout=1)
