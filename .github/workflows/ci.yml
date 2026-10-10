@@ -30,6 +30,7 @@ jobs:
         run: |
           bash -n runtime/gpt
           bash -n runtime/maintain_bridge.sh
+          bash -n runtime/boot_bridge.sh
           bash -n runtime/start_bridge.sh
           bash -n runtime/status_bridge.sh
           bash -n runtime/stop_bridge.sh
