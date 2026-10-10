@@ -15,6 +15,10 @@ class PhoneToolNameTests(unittest.TestCase):
         self.assertEqual(bridge._phone_public_name("phone_health"), "phone_health")
         self.assertEqual(bridge._phone_public_name("get_battery"), "phone_get_battery")
 
+    def test_public_aliases_preserve_legacy_contract(self):
+        self.assertEqual(bridge._phone_public_names("phone_health"), ("phone_health", "phone_phone_health"))
+        self.assertEqual(bridge._phone_public_names("get_battery"), ("phone_get_battery",))
+
     def test_source_name_accepts_canonical_and_legacy_alias(self):
         source_tools = {"phone_health": object(), "get_battery": object()}
         self.assertEqual(bridge._phone_source_name("phone_health", source_tools), "phone_health")

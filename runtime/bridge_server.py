@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.19"
+BRIDGE_VERSION = "1.2.20"
 
 import hashlib
 import hmac
@@ -135,18 +135,26 @@ def _phone_source_name(public_name: str, source_tools=None) -> str:
     return public_name.removeprefix("phone_")
 
 
+def _phone_public_names(source_name: str) -> tuple[str, ...]:
+    """Expose the canonical name and retain any previously published double-prefix alias."""
+    canonical = _phone_public_name(source_name)
+    legacy = f"phone_{source_name}"
+    return (canonical,) if legacy == canonical else (canonical, legacy)
+
+
 for _name, (_input_schema, _handler) in PHONE_TOOLS.items():
-    TOOLS.append({
-        "name": _phone_public_name(_name),
-        "title": f"Phone: {_name.replace('_',' ')}",
-        "description": PHONE_MODULE.DESCRIPTIONS[_name],
-        "inputSchema": _input_schema,
-        "annotations": {
-            "readOnlyHint": _name in _phone_read_only,
-            "destructiveHint": _name in {"set_setting","stop_app","tap","swipe","type_text"},
-            "openWorldHint": _name in _phone_open_world,
-        },
-    })
+    for _public_name in _phone_public_names(_name):
+        TOOLS.append({
+            "name": _public_name,
+            "title": f"Phone: {_name.replace('_',' ')}",
+            "description": PHONE_MODULE.DESCRIPTIONS[_name],
+            "inputSchema": _input_schema,
+            "annotations": {
+                "readOnlyHint": _name in _phone_read_only,
+                "destructiveHint": _name in {"set_setting","stop_app","tap","swipe","type_text"},
+                "openWorldHint": _name in _phone_open_world,
+            },
+        })
 
 GOOGLE_SERVER = Path(__file__).resolve().with_name("google_bridge_tools.py")
 GOOGLE_MODULE = ADAPTERS.load("google", GOOGLE_SERVER)
