@@ -22,12 +22,34 @@ DEFAULT_OUTPUT = 256000
 MAX_OUTPUT = 1000000
 
 
-def _limits(cpu_seconds: int, memory_mb: int):
+def _limits(cpu_seconds: int):
     def apply():
+        # Android's bionic linker may abort on RLIMIT_AS even for tiny tools.
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 2))
-        memory = memory_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
     return apply
+
+
+def _group_rss_bytes(pgid: int) -> int:
+    """Best-effort current RSS for our dedicated process group.
+
+    Android's own app memory limits also remain in force. /proc reports
+    resident memory rather than sparse virtual address reservations.
+    """
+    total = 0
+    for p in __import__("pathlib").Path("/proc").iterdir():
+        if not p.name.isdecimal():
+            continue
+        try:
+            pid = int(p.name)
+            if os.getpgid(pid) != pgid:
+                continue
+            for line in (p / "status").read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    total += int(line.split()[1]) * 1024
+                    break
+        except (OSError, ValueError, ProcessLookupError, PermissionError):
+            pass
+    return total
 
 
 def _terminate_child(proc: subprocess.Popen, grace=1.5):
@@ -65,12 +87,13 @@ def execute(argv, cwd, timeout=30, max_output_chars=DEFAULT_OUTPUT,
     total_bytes = 0
     timed_out = False
     cancelled = False
+    memory_exceeded = False
     try:
         proc = subprocess.Popen(
             argv, cwd=cwd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             start_new_session=True,
-            preexec_fn=_limits(cpu_seconds, memory_mb),
+            preexec_fn=_limits(cpu_seconds),
             close_fds=True,
             env=os.environ.copy())
         assert proc.stdout is not None
@@ -78,7 +101,13 @@ def execute(argv, cwd, timeout=30, max_output_chars=DEFAULT_OUTPUT,
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stdout, selectors.EVENT_READ)
             eof = False
+            last_rss_check = 0.0
             while not eof or proc.poll() is None:
+                if proc.poll() is None and time.monotonic() - last_rss_check >= 0.2:
+                    last_rss_check = time.monotonic()
+                    if _group_rss_bytes(proc.pid) > memory_mb * 1024 * 1024:
+                        memory_exceeded = True
+                        _terminate_child(proc)
                 if cancel is not None and cancel.is_set():
                     cancelled = True
                     _terminate_child(proc)
@@ -108,6 +137,7 @@ def execute(argv, cwd, timeout=30, max_output_chars=DEFAULT_OUTPUT,
             "total_output_bytes": total_bytes,
             "timed_out": timed_out,
             "cancelled": cancelled,
+            "memory_exceeded": memory_exceeded,
             "duration_ms": round((time.monotonic() - start) * 1000),
         }
     finally:
