@@ -154,10 +154,15 @@ def install(g: dict[str, Any]) -> None:
                 raise ValueError("ids must have 1..8 entries")
             cap = min(cap, len(requested_ids))
         battery = battery_status()
-        # At low charge allow one explicitly chosen file, but forbid unattended batches.
-        if ((not battery.get("available") or battery.get("level", 0) < 25)
-            and not battery.get("charging") and (requested_ids is None or cap > 1)):
-            return {"ok":False,"error":"battery too low for bulk OCR; charge phone first",
+        # Power policy: never process at critical charge, even if USB/AC is connected.
+        # Unattended OCR always requires a healthy battery and actual charging.
+        level = battery.get("level", -1) if battery.get("available") else -1
+        charging = battery.get("charging", False)
+        if level < 15 or (requested_ids is None and (level < 35 or not charging)):
+            return {"ok": False, "error": "OCR paused: battery too low or charging required",
+                    "battery": battery, "minimum_battery": 35 if requested_ids is None else 15}
+        if (not charging or level < 35) and (requested_ids is None or cap > 1):
+            return {"ok":False,"error":"batch OCR requires charging and battery >=35%",
                     "battery":battery}
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (state / "gallery_ocr.lock").open("a+") as file_lock:

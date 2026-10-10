@@ -47,3 +47,18 @@ This does not automatically read inaccessible app-private sandboxes or cloud pho
 It does not include biometric identification or image embeddings.
 OCR text is private to the Termux UID but is not encrypted on disk (same as the legacy index).
 Do not share MCP access with untrusted persons. It never modifies or uploads source photos.
+
+
+## Persistent no-JobScheduler fallback (v1.2.23)
+On Android variants where the Termux:API JobScheduler replies but fails to register
+the jobs, TermuxBridge's normal startup launches one private gallery_worker process.
+A lifetime advisory lock prevents duplicates; the worker checks maintenance every
+30 minutes and the maintenance helper **will not run OCR below 35% charge, even
+when the cable is attached**. Termux:Boot invokes normal bridge startup, so
+gallery worker will also be recovered on boot when Android permits Termux:Boot.
+The worker is stopped by normal full bridge shutdown. Seamless runtime updates
+preserve the active instance and continue pointing it to current/gallery_maintenance.py.
+Manual disable: create $HOME/termux-mcp-bridge/state/gallery_worker.disabled then
+restart TermuxBridge. Remove the marker and start_bridge.sh to re-enable.
+The previously unavailable Android JobScheduler self-update job is a separate
+platform problem and is **not claimed repaired** by this fallback.
