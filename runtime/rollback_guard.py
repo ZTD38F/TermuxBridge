@@ -120,6 +120,7 @@ def attempt(root=None):
         if not eligible(root,snapshot):
             return {"result":"NOT_ELIGIBLE"}
         old_route=load(root/"state/route.json")
+        original_journal=load(root/"state/update.json")
         current=old_route["generation"]
         prev=load(root/"state/update.json")["previous_generation"]
         prior=root/"releases"/prev
@@ -230,8 +231,26 @@ def attempt(root=None):
                     "quarantined_generation":current}
         except (OSError,RuntimeError,ValueError):
             if switched:
-                # Original route remains intact if switching fails.
-                save_json(root/"state/route.json",old_route)
+                # Reconcile every pointer on a partial failure, not only route.
+                try:
+                    save_json(root/"state/route.json",old_route)
+                    for name,target in (("current",active_dir),("previous",prior)):
+                        temp=root/("."+name+".rollback-revert")
+                        if temp.is_symlink():
+                            temp.unlink()
+                        temp.symlink_to(target)
+                        os.replace(temp,root/name)
+                    for name,value in (("source_commit",current+"\\n"),
+                                       ("server.pid",str(old_pid)+"\\n")):
+                        tmp=root/("."+name+".rollback-revert")
+                        tmp.write_text(value)
+                        tmp.chmod(0o600)
+                        os.replace(tmp,root/name)
+                    save_json(root/"state/update.json",original_journal)
+                    switched=False
+                except OSError:
+                    # Preserve candidate rather than breaking the routed service.
+                    return {"result":"RECONCILIATION_NEEDED"}
             return {"result":"FAILED_SAFELY"}
         finally:
             if proc is not None and not switched and proc.poll() is None:
