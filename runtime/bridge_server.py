@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.17"
+BRIDGE_VERSION = "1.2.18"
 
 import hashlib
 import hmac
@@ -32,7 +32,7 @@ JOBS = Path(os.environ.get("TERMUX_BRIDGE_JOBS", ROOT / ".termux-mcp-bridge" / "
 MAX_READ = 2_000_000
 MAX_OUTPUT = 1_000_000
 COMMAND_MODE = os.environ.get("TERMUX_BRIDGE_COMMAND_MODE", "open").lower()
-BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path.home() / "termux-mcp-bridge" / "secrets" / "backend_token")).resolve()
+BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")) / "secrets" / "backend_token")).resolve()
 
 
 def _backend_token() -> str:
@@ -93,93 +93,81 @@ TOOLS = [
     {"name": "queue_status", "title": "Inspect queued task", "description": "Read persisted task state and recorded exit status.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "queue_cancel", "title": "Cancel queued task", "description": "Cancel pending task or request termination of a running managed task.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
     {"name": "queue_retry", "title": "Manually retry interrupted task", "description": "Explicitly retry a failed or interrupted task after reviewing side effects.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
+    {"name": "ecosystem_adapter_status", "title": "Adapter versions and health", "description": "List allowed adapter ABI, version, availability, and error isolation status.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_dashboard", "title": "Unified bridge dashboard", "description": "Sanitized local ecosystem health including adapter versions, queue, battery, updates and backups. Optionally create a private static HTML dashboard.", "inputSchema": schema({"html": {"type": "boolean", "default": False}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_create", "title": "Private configuration backup", "description": "Create a private integrity-checked local backup of allowlisted configuration and queue snapshot (no credentials).", "inputSchema": schema(), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_list", "title": "List local backup archives", "description": "Read names and sizes of local verified-generation backup files.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_verify", "title": "Verify local backup integrity", "description": "Verify keyed integrity and strict allowlist for one local archive.", "inputSchema": schema({"name": {"type": "string"}}, ["name"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_restore", "title": "Restore allowed configuration only", "description": "Default dry-run. Requires explicit confirm=true to restore only non-critical configuration (never secrets or live queue).", "inputSchema": schema({"name": {"type": "string"}, "confirm": {"type": "boolean", "default": False}}, ["name"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
+    {"name": "ecosystem_chaos_test", "title": "Safe synthetic fault test", "description": "Run disposable local failure-injection scenarios without touching active bridge processes.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "spotify_migrator", "title": "Run Spotify safe migrator", "description": "Run snapshot, resolve, plan, apply, verify, or status using spotify_v31_safe.py. Apply is a write action and ChatGPT should ask for confirmation.", "inputSchema": schema({"action": {"type": "string", "enum": ["snapshot", "resolve", "plan", "apply", "verify", "status"]}, "project_dir": {"type": "string", "default": "storage/downloads/Spotify_V3.1/work_v31/package"}, "background": {"type": "boolean", "default": True}}, ["action"]), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}},
 ]
 
 
-# Load the typed no-root Android controller. It deliberately keeps Android
-# security boundaries and action-bound confirmations for sensitive operations.
-PHONE_SERVER = ROOT / "ai-phone-control" / "mcp-server" / "server.py"
-PHONE_MODULE = None
-PHONE_TOOLS = {}
-if PHONE_SERVER.is_file():
-    _phone_spec = importlib.util.spec_from_file_location("phone_control_bridge", PHONE_SERVER)
-    if _phone_spec and _phone_spec.loader:
-        PHONE_MODULE = importlib.util.module_from_spec(_phone_spec)
-        _phone_spec.loader.exec_module(PHONE_MODULE)
-        PHONE_TOOLS = PHONE_MODULE.TOOLS
-        _phone_read_only = {
-            "phone_health", "get_device_state", "get_battery", "get_network_state",
-            "list_apps", "get_setting", "get_hotspot_state", "audit_tail",
-            "organizer_summary",
-        }
-        _phone_open_world = {"open_app", "open_settings_page", "import_chatgpt_export"}
-        for _name, (_input_schema, _handler) in PHONE_TOOLS.items():
-            TOOLS.append({
-                "name": f"phone_{_name}",
-                "title": f"Phone: {_name.replace('_', ' ')}",
-                "description": PHONE_MODULE.DESCRIPTIONS[_name],
-                "inputSchema": _input_schema,
-                "annotations": {
-                    "readOnlyHint": _name in _phone_read_only,
-                    "destructiveHint": _name in {"set_setting", "stop_app", "tap", "swipe", "type_text"},
-                    "openWorldHint": _name in _phone_open_world,
-                },
-            })
+# Each built-in adapter initializes independently. A broken optional adapter
+# cannot abort startup or interfere with the core MCP router.
+try:
+    from .adapter_runtime import AdapterRegistry
+    from . import ecosystem_core
+except ImportError:
+    from adapter_runtime import AdapterRegistry
+    import ecosystem_core
 
+ADAPTERS = AdapterRegistry()
+PHONE_SERVER = ROOT / "ai-phone-control" / "mcp-server" / "server.py"
+PHONE_MODULE = ADAPTERS.load("phone", PHONE_SERVER)
+PHONE_TOOLS = PHONE_MODULE.TOOLS if PHONE_MODULE is not None else {}
+_phone_read_only = {
+    "phone_health", "get_device_state", "get_battery", "get_network_state",
+    "list_apps", "get_setting", "get_hotspot_state", "audit_tail", "organizer_summary",
+}
+_phone_open_world = {"open_app", "open_settings_page", "import_chatgpt_export"}
+for _name, (_input_schema, _handler) in PHONE_TOOLS.items():
+    TOOLS.append({
+        "name": f"phone_{_name}",
+        "title": f"Phone: {_name.replace('_',' ')}",
+        "description": PHONE_MODULE.DESCRIPTIONS[_name],
+        "inputSchema": _input_schema,
+        "annotations": {
+            "readOnlyHint": _name in _phone_read_only,
+            "destructiveHint": _name in {"set_setting","stop_app","tap","swipe","type_text"},
+            "openWorldHint": _name in _phone_open_world,
+        },
+    })
 
 GOOGLE_SERVER = Path(__file__).resolve().with_name("google_bridge_tools.py")
-GOOGLE_MODULE = None
-GOOGLE_TOOLS = {}
-if GOOGLE_SERVER.is_file():
-    _google_spec = importlib.util.spec_from_file_location("google_bridge_tools", GOOGLE_SERVER)
-    if _google_spec and _google_spec.loader:
-        GOOGLE_MODULE = importlib.util.module_from_spec(_google_spec)
-        try:
-            _google_spec.loader.exec_module(GOOGLE_MODULE)
-        except (ImportError, OSError):
-            # Optional Google adapter may lack its separate per-user client.
-            # Its absence must not prevent the core MCP runtime from starting.
-            GOOGLE_MODULE = None
-        if GOOGLE_MODULE is not None:
-            GOOGLE_TOOLS = GOOGLE_MODULE.TOOLS
-            for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
-                TOOLS.append({
-                    "name": _name,
-                    "title": _name.replace("_", " ").title(),
-                    "description": GOOGLE_MODULE.DESCRIPTIONS[_name],
-                    "inputSchema": _input_schema,
-                    "annotations": {
-                        "readOnlyHint": _name in {"google_tasks_list_tasklists", "google_tasks_list_tasks", "google_keep_list_notes", "google_keep_search_notes", "google_maps_search"},
-                        "destructiveHint": _name == "google_tasks_delete_task",
-                        "openWorldHint": True,
-                    },
-                })
-
-
+GOOGLE_MODULE = ADAPTERS.load("google", GOOGLE_SERVER)
+GOOGLE_TOOLS = GOOGLE_MODULE.TOOLS if GOOGLE_MODULE is not None else {}
+for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
+    TOOLS.append({
+        "name": _name,
+        "title": _name.replace("_"," ").title(),
+        "description": GOOGLE_MODULE.DESCRIPTIONS[_name],
+        "inputSchema": _input_schema,
+        "annotations": {
+            "readOnlyHint": _name in {"google_tasks_list_tasklists","google_tasks_list_tasks",
+                                     "google_keep_list_notes","google_keep_search_notes",
+                                     "google_maps_search"},
+            "destructiveHint": _name == "google_tasks_delete_task",
+            "openWorldHint": True,
+        },
+    })
 
 GALLERY_SERVER = Path(__file__).resolve().with_name("gallery_bridge_tools.py")
-GALLERY_MODULE = None
-GALLERY_TOOLS = {}
-if GALLERY_SERVER.is_file():
-    _gallery_spec = importlib.util.spec_from_file_location("gallery_bridge_tools", GALLERY_SERVER)
-    if _gallery_spec and _gallery_spec.loader:
-        GALLERY_MODULE = importlib.util.module_from_spec(_gallery_spec)
-        _gallery_spec.loader.exec_module(GALLERY_MODULE)
-        GALLERY_TOOLS = GALLERY_MODULE.TOOLS
-        for _name, (_input_schema, _handler) in GALLERY_TOOLS.items():
-            TOOLS.append({
-                "name": _name,
-                "title": _name.replace("_", " ").title(),
-                "description": GALLERY_MODULE.DESCRIPTIONS[_name],
-                "inputSchema": _input_schema,
-                "annotations": {
-                    "readOnlyHint": _name in GALLERY_MODULE.READ_ONLY,
-                    "destructiveHint": False,
-                    "openWorldHint": False,
-                },
-            })
-
+GALLERY_MODULE = ADAPTERS.load("gallery", GALLERY_SERVER)
+GALLERY_TOOLS = GALLERY_MODULE.TOOLS if GALLERY_MODULE is not None else {}
+for _name, (_input_schema, _handler) in GALLERY_TOOLS.items():
+    TOOLS.append({
+        "name": _name,
+        "title": _name.replace("_"," ").title(),
+        "description": GALLERY_MODULE.DESCRIPTIONS[_name],
+        "inputSchema": _input_schema,
+        "annotations": {
+            "readOnlyHint": _name in GALLERY_MODULE.READ_ONLY,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    })
 
 def gallery_virtual_read(path: str, max_chars: int = 100000):
     """Backward-compatible image access through the long-lived read_text tool.
@@ -294,7 +282,7 @@ def job_alive(meta):
 
 
 def bridge_diagnostics():
-    root = Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge"))
+    root = Path(os.environ.get("TERMUXBRIDGE_ROOT", Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge"))))
     output = {"version": BRIDGE_VERSION}
     for section, keys in (("route", ("generation", "port")),
                           ("update", ("phase", "update_kind", "current_generation")),
@@ -355,6 +343,23 @@ def start(argv, cwd):
 
 
 def call(name, a):
+    if name == "ecosystem_adapter_status":
+        return ADAPTERS.status()
+    if name == "ecosystem_dashboard":
+        return ecosystem_core.dashboard(
+            Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")), adapters=ADAPTERS.status(),
+            html_file=bool(a.get("html",False)))
+    if name == "ecosystem_backup_create":
+        return ecosystem_core.backup_create(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")))
+    if name == "ecosystem_backup_list":
+        return ecosystem_core.backup_list(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")))
+    if name == "ecosystem_backup_verify":
+        return ecosystem_core.backup_verify(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")), a["name"])
+    if name == "ecosystem_backup_restore":
+        return ecosystem_core.backup_restore(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")),
+                                              a["name"], confirm=bool(a.get("confirm",False)))
+    if name == "ecosystem_chaos_test":
+        return ecosystem_core.chaos_selftest()
     if name == "queue_submit":
         return queue_core.submit(a["task"], a.get("script"), a.get("priority", 5))
     if name == "queue_list":
@@ -447,7 +452,7 @@ def call(name, a):
         if PHONE_MODULE is None or phone_name not in PHONE_TOOLS:
             raise ValueError(f"Unknown phone tool: {phone_name}")
         try:
-            value = PHONE_TOOLS[phone_name][1](a)
+            value = ADAPTERS.invoke("phone",name,a)
             ok = not (isinstance(value, dict) and value.get("ok") is False)
             PHONE_MODULE._audit(phone_name, ok, "completed" if ok else "capability unavailable or command failed")
             if not ok:
@@ -459,11 +464,11 @@ def call(name, a):
     if name.startswith("gallery_"):
         if GALLERY_MODULE is None or name not in GALLERY_TOOLS:
             raise ValueError(f"Unknown gallery tool: {name}")
-        return GALLERY_TOOLS[name][1](a)
+        return ADAPTERS.invoke("gallery",name,a)
     if name.startswith("google_"):
         if GOOGLE_MODULE is None or name not in GOOGLE_TOOLS:
             raise ValueError(f"Unknown Google tool: {name}")
-        return GOOGLE_TOOLS[name][1](a)
+        return ADAPTERS.invoke("google",name,a)
     raise ValueError(f"Unknown tool: {name}")
 
 

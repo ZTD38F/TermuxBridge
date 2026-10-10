@@ -40,6 +40,9 @@ RUNTIME_FILES=(
   queue_core.py
   rollback_guard.py
   autonomy_engine.py
+  adapter_runtime.py
+  ecosystem_core.py
+  ecosystem_cli.py
 )
 MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh boot_bridge.sh)
 

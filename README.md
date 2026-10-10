@@ -311,3 +311,76 @@ intentionally breaking the user's live bridge.
 The server still runs as the normal Android/Termux application UID; neither
 root nor background ChatGPT model inference is required. Client applications
 may need to refresh their MCP tool discovery to display new queue tools.
+
+## Ecosystem · Phase 3 (v1.2.18)
+
+### Built-in adapters and compatibility
+
+The phone, gallery and Google adapters are independently imported through the
+fixed allowlist in `runtime/adapter_runtime.py`. A broken or absent optional
+adapter no longer aborts the core bridge. Each adapter declares an API version
+and ABI; unsupported major versions, mismatching ABI, collisions and tools
+outside their registered namespace are rejected. Three unexpected execution
+errors isolate that adapter for 60 seconds; successful operations reset the
+failure count. Existing MCP tools and input schemas remain unchanged. This
+is **exception/circuit-breaker isolation**, not a separate operating-system
+process sandbox or a hard execution timeout; Android permissions still apply.
+Adapter versions in the registry identify the **TermuxBridge adapter API**,
+not installed Google/Android app versions.
+
+### Local diagnostics panel
+
+```bash
+termuxbridgectl dashboard
+termuxbridgectl dashboard-html
+```
+
+The second command creates `~/termux-mcp-bridge/state/dashboard.html` (0600):
+a static offline page with local process health, queued jobs, adapter ABI and
+availability, power policy, update state and backup count. No CDN, JavaScript,
+web listener, secret tokens or personal app content is included.
+The optional MCP tool `ecosystem_dashboard` can return the same snapshot.
+A running local tunnel process is **not** proof of remote ChatGPT connectivity.
+
+### Private, integrity-checked local backups
+
+```bash
+termuxbridgectl backup-create
+termuxbridgectl backup-list
+termuxbridgectl backup-verify BACKUP_FILENAME
+termuxbridgectl backup-restore BACKUP_FILENAME       # dry-run
+termuxbridgectl backup-restore BACKUP_FILENAME --yes # explicit restore
+```
+
+Allowed data: non-secret local energy, notification and adapter settings,
+plus a consistent SQLite *snapshot* of the queued tasks.
+Secret/token files, raw logs, mobile gallery, app accounts and phone file
+contents are excluded. Backups are local (0700 directory, 0600 files), bounded
+in size and count (last five retained) and HMAC-SHA256 protected by a derived
+key from this installation's router token. **HMAC gives integrity, not
+encryption**: do not upload the archives or copy them to an untrusted location.
+They cannot be verified on another installation without the same local key.
+Automatic backups run at most once per day after a healthy maintenance check,
+provided sufficient storage is available.
+
+Restoration defaults to **verification-only**. Only the three non-critical
+JSON settings files can be restored explicitly; the live SQLite queue, process
+pointers, release routes, running jobs, executable files and secrets are
+**never restored automatically**. This design avoids duplicating side effects
+and destroying a running deployment.
+
+### Safe chaos testing
+
+```bash
+termuxbridgectl chaos-test
+```
+
+Runs synthetic fault injection in a disposable temporary directory: adapter
+crash/circuit breaker, independent healthy adapter, backup corruption and
+checksum rejection. The full GitHub regression suite additionally tests
+malformed adapter contracts, cross-namespace tools, symlinks, restore dry-runs,
+queue snapshots, backup retention, privacy and static dashboard escaping.
+Neither mode intentionally kills the live tunnel or disables Android services.
+
+Phase 3 only introduces allowlisted, versioned built-in adapters. It does not
+load arbitrary third-party Python files or bypass Android permission dialogs.
