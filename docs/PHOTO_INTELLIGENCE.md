@@ -62,3 +62,13 @@ Manual disable: create $HOME/termux-mcp-bridge/state/gallery_worker.disabled the
 restart TermuxBridge. Remove the marker and start_bridge.sh to re-enable.
 The previously unavailable Android JobScheduler self-update job is a separate
 platform problem and is **not claimed repaired** by this fallback.
+
+
+## Charging OCR policy (v1.2.24)
+User-requested: OCR can run immediately while connected to power at >=15% charge.
+The previous 35% minimum is removed in both direct OCR and background maintenance.
+Unplugging, dropping below 15%, or a battery temperature at or above 43C pauses
+OCR processing. The runtime rechecks power before each file; work stays local.
+Unreadable but unchanged images are logged so they cannot block later batches.
+
+At v1.2.24 the gallery worker opportunistically attempts OCR every 5 minutes instead of every 30 minutes. Jobs remain capped at eight photos per run; temperature and charger state are checked before each photo.

@@ -78,7 +78,7 @@ def main() -> int:
                     break
                 # Ignore wakeups; use bounded polling without OS JobScheduler.
                 # Android may suspend Termux when background activity is restricted.
-                for _ in range(180):  # 30 minutes, interrupts promptly on SIGTERM
+                for _ in range(30):  # 5 minutes, interrupts promptly on SIGTERM
                     if STOP:
                         break
                     time.sleep(10)
