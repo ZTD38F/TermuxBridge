@@ -119,6 +119,20 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(result["paused"],"POWER_OR_THERMAL_GUARD")
         self.assertEqual(result["recognized_ids"],[])
 
+    def test_full_mode_allows_high_battery_unplugged(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":95,"charging":False,"temperature_c":35.0}), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"max_images":1,"languages":"eng","allow_on_battery":True})
+        self.assertTrue(result["ok"],result)
+        self.assertEqual(result["recognized_ids"],[self.photo_id])
+
+    def test_full_mode_pauses_low_battery_unplugged(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":24,"charging":False,"temperature_c":35.0}), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"max_images":1,"languages":"eng","allow_on_battery":True})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["minimum_battery"],25)
+
     def test_low_battery_blocks_background_batch(self):
         with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":False}), \
              patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):

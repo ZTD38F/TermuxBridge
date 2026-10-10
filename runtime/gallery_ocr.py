@@ -147,8 +147,8 @@ def install(g: dict[str, Any]) -> None:
         if not requested or any(x not in RECOGNITION_LANGUAGES or x not in available for x in requested):
             raise ValueError("only installed rus, lav, eng languages are supported")
         languages = "+".join(dict.fromkeys(requested))
-        cap = max(1, min(8, int(arguments.get("max_images", 2))))
-        seconds = max(3, min(60, int(arguments.get("max_seconds", 24))))
+        cap = max(1, min(16, int(arguments.get("max_images", 2))))
+        seconds = max(3, min(180, int(arguments.get("max_seconds", 24))))
         requested_ids = arguments.get("ids")
         if requested_ids is not None:
             if not isinstance(requested_ids, list) or not 1 <= len(requested_ids) <= 8:
@@ -160,9 +160,11 @@ def install(g: dict[str, Any]) -> None:
         level = battery.get("level", -1) if battery.get("available") else -1
         charging = battery.get("charging", False)
         temperature = battery.get("temperature_c")
-        if level < 15 or not charging or (temperature is not None and temperature >= 43):
-            return {"ok": False, "error": "OCR paused: charging required, battery below 15%, or temperature >=43C",
-                    "battery": battery, "minimum_battery": 15}
+        allow_on_battery = bool(arguments.get("allow_on_battery", False))
+        minimum = 25 if allow_on_battery and not charging else 15
+        if level < minimum or (not charging and not allow_on_battery) or (temperature is not None and temperature >= 43):
+            return {"ok": False, "error": "OCR paused by power or thermal guard",
+                    "battery": battery, "minimum_battery": minimum}
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (state / "gallery_ocr.lock").open("a+") as file_lock:
             try:
@@ -199,8 +201,11 @@ def install(g: dict[str, Any]) -> None:
                     break
                 current_power = battery_status()
                 temp = current_power.get("temperature_c")
-                if (not current_power.get("available") or current_power.get("level",-1) < 15
-                    or not current_power.get("charging") or (temp is not None and temp >= 43)):
+                current_charging = current_power.get("charging", False)
+                current_minimum = 25 if allow_on_battery and not current_charging else 15
+                if (not current_power.get("available") or current_power.get("level",-1) < current_minimum
+                    or (not current_charging and not allow_on_battery)
+                    or (temp is not None and temp >= 43)):
                     paused = "POWER_OR_THERMAL_GUARD"
                     break
                 with db() as c:
@@ -351,9 +356,10 @@ def install(g: dict[str, Any]) -> None:
     tools["gallery_ocr_index"] = (schema({
         "ids":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"integer","minimum":1}},
         "album":{"type":"string"},
-        "max_images":{"type":"integer","minimum":1,"maximum":8,"default":2},
-        "max_seconds":{"type":"integer","minimum":3,"maximum":60,"default":24},
-        "languages":{"type":"string","default":"rus+lav+eng"}
+        "max_images":{"type":"integer","minimum":1,"maximum":16,"default":2},
+        "max_seconds":{"type":"integer","minimum":3,"maximum":180,"default":24},
+        "languages":{"type":"string","default":"rus+lav+eng"},
+        "allow_on_battery":{"type":"boolean","default":False}
     }),index)
     tools["gallery_ocr_text"] = (schema({"id":{"type":"integer","minimum":1},
                                       "max_chars":{"type":"integer","minimum":1,"maximum":16000}},["id"]),text)

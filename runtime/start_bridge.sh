@@ -135,6 +135,20 @@ else
   write_route "$CURRENT_GENERATION" "$CURRENT_PORT"
 fi
 
+start_full_gallery_ocr() {
+  local state="$HOME/.termux-mcp-bridge"
+  [[ -f "$CURRENT_DIR/gallery_full_ocr.py" && -f "$state/gallery_full_ocr.enabled" ]] || return 0
+  if [[ -f "$state/gallery_full_ocr_status.json" ]] && grep -Fq '"state": "COMPLETE"' "$state/gallery_full_ocr_status.json"; then
+    return 0
+  fi
+  local pid=""
+  if [[ -s "$state/gallery_full_ocr.pid" ]]; then
+    pid="$(cat "$state/gallery_full_ocr.pid" 2>/dev/null || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && return 0
+  fi
+  nohup env PYTHONPATH="$CURRENT_DIR" python "$CURRENT_DIR/gallery_full_ocr.py" >"$BRIDGE_DIR/logs/gallery_full_ocr.log" 2>&1 9>&- &
+}
+
 start_gallery_worker() {
   # Persistent read-only photo maintenance, independent of Android JobScheduler.
   # All CPU-heavy tasks are protected by gallery_maintenance battery checks.
@@ -178,6 +192,7 @@ start_tunnel_watchdog() {
 # A tunnel failure MUST NOT restart a healthy authenticated MCP stack.
 if pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
    proxy_healthy && backend_health "$CURRENT_PORT" && router_health; then
+  start_full_gallery_ocr
   start_gallery_worker
   start_tunnel_watchdog
   exit $?
@@ -242,5 +257,6 @@ if ! start_tunnel_watchdog; then
   exit 4
 fi
 trap - ERR INT TERM
+start_full_gallery_ocr
 start_gallery_worker
 echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."
