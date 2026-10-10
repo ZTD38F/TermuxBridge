@@ -94,6 +94,14 @@ fi
 if [[ -f "$ROOT/current/autonomy_engine.py" ]]; then
   python "$ROOT/current/autonomy_engine.py" alerts "$ROOT" >>"$LOG" 2>&1 || true
 fi
+# Preserve only signed, allowlisted configuration + a consistent SQLite
+# queue snapshot. Skip backups when unhealthy or storage is low.
+if [[ -f "$ROOT/current/ecosystem_cli.py" ]]; then
+  python "$ROOT/current/ecosystem_cli.py" auto-backup "$ROOT" >>"$LOG" 2>&1 || true
+  # Refresh private offline HTML dashboard; no web server is introduced.
+  python "$ROOT/current/ecosystem_cli.py" html "$ROOT" >>"$LOG" 2>&1 || true
+fi
+
 printf '%s completed: start=%s update=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$start_rc" "$update_rc" >>"$LOG"
 rotate_log
 if [[ "$update_rc" -eq 75 ]]; then
