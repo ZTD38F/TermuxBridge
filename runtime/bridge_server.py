@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.20"
+BRIDGE_VERSION = "1.2.21"
 
 import hashlib
 import hmac
@@ -256,6 +256,28 @@ def gallery_virtual_read(path: str, max_chars: int = 100000):
             if value not in (None, ""):
                 args[key] = value
         return GALLERY_MODULE.gallery_list(args)
+
+    # Sonoryx Photo Intelligence routes, available via the existing read_text tool.
+    if route in {"health", "search", "duplicates"} or route.startswith("metadata/") or route == "similar":
+        if route == "health":
+            return GALLERY_MODULE.gallery_status({})
+        if route == "search":
+            args = {"limit": int(one("limit", "50")), "offset": int(one("offset", "0")),
+                    "sort": one("sort", "newest")}
+            for key in ("query", "album", "date_from", "date_to"):
+                val = one(key)
+                if val:
+                    args[key] = val
+            return GALLERY_MODULE.gallery_search(args)
+        if route == "duplicates":
+            return GALLERY_MODULE.gallery_find_duplicates({
+                "max_files": int(one("max_files", "200")),
+                "max_megabytes": int(one("max_megabytes", "128"))})
+        if route == "similar":
+            ids = [int(x) for x in (one("ids", "").split(",")) if x.strip()]
+            return GALLERY_MODULE.gallery_similar({
+                "ids": ids, "threshold": int(one("threshold", "8"))})
+        return GALLERY_MODULE.gallery_metadata({"id": int(route.split("/", 1)[1])})
 
     raise ValueError(
         "Unknown gallery virtual path; use gallery://image/ID, "

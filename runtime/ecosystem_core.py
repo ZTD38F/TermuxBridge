@@ -133,10 +133,15 @@ def backup_create(root,*,clock=None):
         os.replace(temp,output)
     finally:
         temp.unlink(missing_ok=True)
-    files=sorted(folder.glob("termuxbridge-*.zip"))
-    for old in files[:-KEEP_BACKUPS]:
-        if old.is_file() and not old.is_symlink():
-            old.unlink()
+    # Preserve the archive just created even when several backups share the
+    # same clock-second and the nanosecond suffix is not lexically monotonic.
+    # Sorting filenames alone can delete the newest successful backup.
+    previous=sorted(
+        (p for p in folder.glob("termuxbridge-*.zip")
+         if p!=output and p.is_file() and not p.is_symlink()),
+        key=lambda p:(p.stat().st_mtime_ns,p.name),reverse=True)
+    for old in previous[max(KEEP_BACKUPS-1,0):]:
+        old.unlink()
     write_json(root/"state/backup_status.json",
                {"last_success_epoch":int(now.timestamp()),"last_archive":output.name,
                 "file_count":len(meta),"result":"OK"})
