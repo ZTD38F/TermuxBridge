@@ -255,3 +255,59 @@ generation, a missing helper may be restored from that exact verified release;
 existing divergent immutable files are not silently overwritten.
 
 The GitHub Release workflow runs all regression tests before publishing.
+
+
+## Reliable Core, Phase 1 (v1.2.15)
+
+Five production capabilities are implemented without changing the existing
+MCP tool schemas:
+
+1. **Bounded streaming execution.** Existing `run_command` and
+   `run_command_extended` now drain merged stdout/stderr incrementally and
+   retain a configurable output tail rather than calling
+   `subprocess.run(capture_output=True)`. Timeouts and cancellation terminate
+   only the subprocess group created for that operation.
+2. **Resource and concurrency budgets.** At most **two concurrent direct
+   executions per backend generation** can hold the local synchronous slot
+   semaphore; the durable queue runs **one additional task worker**. Command
+   children receive an `RLIMIT_CPU` budget, with 2048 MiB default RSS watchdog
+   accounting across subprocess-group members. Android rejects tight
+   `RLIMIT_AS` virtual-memory limits for even trivial commands, so this bridge
+   intentionally uses actual process-group RSS monitoring instead. RSS checks
+   are best-effort, not hard Android cgroup quotas. Android system permissions
+   and app-level limits remain authoritative.
+3. **SQLite durable queue.** New MCP tools: `queue_submit`, `queue_list`,
+   `queue_status`, `queue_cancel` and `queue_retry`. The private
+   `state/queue.sqlite3` stores task IDs, state, priority, timestamps, and
+   validated script paths, **not raw argv or command output**. Queue tasks are
+   either `health` or a pre-existing `.sh` script under the bridge's
+   install root. The queue worker is a single leased owner across old and
+   candidate MCP generations during blue/green updates.
+4. **Cancellation and recovery.** A queued task may be cancelled immediately;
+   a running task receives a cancellation request, then an owned subprocess
+   group receives SIGTERM (SIGKILL only if that group remains alive after the
+   grace period). When the worker restarts, interrupted idempotent `health`
+   tasks may be requeued; interrupted scripts move to `NEEDS_REVIEW`.
+   `queue_retry` is an explicit operator action to avoid repeating a script
+   whose side effects may have already happened. This is **at-least-once**
+   recovery for idempotent jobs, not exactly-once execution.
+5. **Conservative release rollback.** During hourly maintenance, three
+   consecutive backend-specific failures can trigger the guarded
+   `rollback_guard.py`. It requires a healthy authenticated supervisor and
+   an existing previously validated generation. The previous backend is
+   started on the inactive port and checked via direct health and routed
+   MCP `tools/list` before state is committed. The unsuccessful release is
+   quarantined to stop the hourly updater reinstalling it. Explicit operator
+   `--force` can override quarantine. General network outages, tunnel
+   authorization failures and unrelated app errors are **not** grounds for
+   automatic rollback.
+
+Use the normal `termuxbridgectl maintenance-status` to inspect runtime health
+and `termuxbridgectl update-now` for a manual verified update. The rollback
+mechanism is covered by isolated integration tests that simulate broken and
+healthy MCP generations on disposable loopback ports. It must not be tested by
+intentionally breaking the user's live bridge.
+
+The server still runs as the normal Android/Termux application UID; neither
+root nor background ChatGPT model inference is required. Client applications
+may need to refresh their MCP tool discovery to display new queue tools.

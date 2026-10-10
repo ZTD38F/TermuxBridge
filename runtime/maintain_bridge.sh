@@ -63,6 +63,22 @@ if [[ ! -f "$health_script" ]]; then
 fi
 health_rc=0
 python "$health_script" "$ROOT" "$start_rc" "$update_rc" || health_rc=$?
+# Three independently observed backend-specific failures trigger a guarded
+# last-known-good rollback. The guard requires authenticated supervisor health,
+# a previous local verified generation and the update lock.
+rollback_script="$ROOT/current/rollback_guard.py"
+rollback_rc=0
+if [[ -f "$rollback_script" ]]; then
+  rollback_out="$(python "$rollback_script" 2>>"$LOG")" || rollback_rc=$?
+  [[ -z "$rollback_out" ]] || printf '%s\n' "$rollback_out" >>"$LOG"
+  if [[ "$rollback_out" == *'"ROLLED_BACK"'* ]]; then
+    # After successful rollback re-evaluate the actual recovered service.
+    health_rc=0
+    start_rc=0
+    update_rc=0
+    python "$ROOT/current/maintenance_health.py" "$ROOT" 0 0 || health_rc=$?
+  fi
+fi
 
 printf '%s completed: start=%s update=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$start_rc" "$update_rc" >>"$LOG"
 rotate_log

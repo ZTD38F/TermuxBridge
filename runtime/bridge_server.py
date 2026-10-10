@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.14"
+BRIDGE_VERSION = "1.2.15"
 
 import hashlib
 import hmac
@@ -17,6 +17,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+
+try:
+    from .execution_core import execute as streaming_execute
+    from . import queue_core
+except ImportError:
+    from execution_core import execute as streaming_execute
+    import queue_core
 
 ROOT = Path(os.environ.get("TERMUX_BRIDGE_ROOT", Path.home())).resolve()
 SHARED_ROOT = Path("/storage/emulated/0").resolve()
@@ -81,6 +88,11 @@ TOOLS = [
     {"name": "stop_job", "title": "Stop tracked job", "description": "Send SIGTERM to an identity-verified job launched by this bridge, never SIGKILL.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}}, ["job_id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
     {"name": "job_status", "title": "Check background job", "description": "Check whether a bridge job is still running.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "read_job_log", "title": "Read background job log", "description": "Read the tail of a background job log without exposing bridge secrets.", "inputSchema": schema({"job_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 256_000, "default": 20000}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "queue_submit", "title": "Queue a durable Termux task", "description": "Submit a named health check or existing .sh inside the bridge root. SQLite stores no command arguments or credentials.", "inputSchema": schema({"task": {"type": "string", "enum": ["health", "script"]}, "script": {"type": "string"}, "priority": {"type": "integer", "minimum": 0, "maximum": 9, "default": 5}}, ["task"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "queue_list", "title": "List queued tasks", "description": "List persistent queue states, IDs and result codes.", "inputSchema": schema({"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "queue_status", "title": "Inspect queued task", "description": "Read persisted task state and recorded exit status.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "queue_cancel", "title": "Cancel queued task", "description": "Cancel pending task or request termination of a running managed task.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
+    {"name": "queue_retry", "title": "Manually retry interrupted task", "description": "Explicitly retry a failed or interrupted task after reviewing side effects.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
     {"name": "spotify_migrator", "title": "Run Spotify safe migrator", "description": "Run snapshot, resolve, plan, apply, verify, or status using spotify_v31_safe.py. Apply is a write action and ChatGPT should ask for confirmation.", "inputSchema": schema({"action": {"type": "string", "enum": ["snapshot", "resolve", "plan", "apply", "verify", "status"]}, "project_dir": {"type": "string", "default": "storage/downloads/Spotify_V3.1/work_v31/package"}, "background": {"type": "boolean", "default": True}}, ["action"]), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}},
 ]
 
@@ -318,9 +330,8 @@ def bridge_diagnostics():
 
 
 def run(argv, cwd, timeout=30, max_output_chars=256000):
-    proc = subprocess.run(checked_argv(argv), cwd=execution_cwd(cwd), text=True, errors="replace", capture_output=True, timeout=timeout, env=os.environ.copy())
-    out = proc.stdout + proc.stderr
-    return {"exit_code": proc.returncode, "output": out[-max_output_chars:], "truncated": len(out) > max_output_chars}
+    return streaming_execute(checked_argv(argv), str(execution_cwd(cwd)),
+                             timeout=timeout, max_output_chars=max_output_chars)
 
 
 def start(argv, cwd):
@@ -344,6 +355,16 @@ def start(argv, cwd):
 
 
 def call(name, a):
+    if name == "queue_submit":
+        return queue_core.submit(a["task"], a.get("script"), a.get("priority", 5))
+    if name == "queue_list":
+        return queue_core.listing(a.get("limit", 25))
+    if name == "queue_status":
+        return queue_core.status(a["id"])
+    if name == "queue_cancel":
+        return queue_core.cancel(a["id"])
+    if name == "queue_retry":
+        return queue_core.retry(a["id"])
     if name == "bridge_diagnostics": return bridge_diagnostics()
     if name == "termux_status":
         active = 0
@@ -509,6 +530,7 @@ def main():
     if "--http" in sys.argv:
         index = sys.argv.index("--http")
         port = int(sys.argv[index + 1]) if len(sys.argv) > index + 1 else 8765
+        queue_core.start_worker()
         ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     else:
         for line in sys.stdin:

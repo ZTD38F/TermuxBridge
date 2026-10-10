@@ -36,6 +36,9 @@ RUNTIME_FILES=(
   check_phone_bridge.py
   validate_phone_integration.py
   maintenance_health.py
+  execution_core.py
+  queue_core.py
+  rollback_guard.py
 )
 MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh)
 
@@ -326,6 +329,22 @@ else
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
 [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { log "ERROR invalid target SHA"; exit 1; }
+# A backend-failed release must never be silently reinstalled by the
+# hourly automatic update. Explicit --force overrides quarantine for operators.
+if [[ "${1:-}" != "--force" && -f "$STATE_DIR/quarantine.json" ]]; then
+  if python - "$STATE_DIR/quarantine.json" "$TARGET" <<'PY'
+import json,sys
+try:
+    data=json.load(open(sys.argv[1]))
+    raise SystemExit(0 if data.get("generation")==sys.argv[2] else 1)
+except (OSError,ValueError):
+    raise SystemExit(1)
+PY
+  then
+    log "skipped quarantined release $TARGET; waiting for a newer stable version"
+    exit 0
+  fi
+fi
 if [[ "$CURRENT" == "$TARGET" && "${1:-}" != "--force" && "${1:-}" != "--repair" ]]; then
   UPDATE_PHASE="$(python - "$JOURNAL" <<'PY'
 import json,pathlib,sys
