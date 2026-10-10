@@ -206,6 +206,9 @@ def backup_restore(root,name,*,confirm=False):
     file=_selected_archive(root,name)
     written=[]
     with zipfile.ZipFile(file,"r") as z:
+        # Validate every candidate BEFORE writing any file; corrupted JSON
+        # must never cause partial restoration of valid prior members.
+        validated={}
         for rel in report["restorable"]:
             data=z.read("config/"+rel)
             if not isinstance(json.loads(data),dict):
@@ -213,6 +216,9 @@ def backup_restore(root,name,*,confirm=False):
             target=root/rel
             if target.is_symlink() or target.parent.is_symlink():
                 raise ValueError("refusing symlink destination")
+            validated[rel]=data
+        for rel,data in validated.items():
+            target=root/rel
             target.parent.mkdir(parents=True,exist_ok=True)
             tmp=target.with_name("."+target.name+".restore-next")
             tmp.write_bytes(data)
@@ -335,7 +341,10 @@ def auto_backup(root,*,now=None):
 
 def chaos_selftest():
     # Strictly synthetic. No real PIDs, network, installed paths or subprocess.
-    from adapter_runtime import AdapterRegistry
+    try:
+        from .adapter_runtime import AdapterRegistry
+    except ImportError:
+        from adapter_runtime import AdapterRegistry
     with tempfile.TemporaryDirectory(prefix="termuxbridge-chaos-") as temp:
         root=Path(temp)
         (root/"secrets").mkdir()
