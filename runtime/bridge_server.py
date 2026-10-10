@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.21"
+BRIDGE_VERSION = "1.2.22"
 
 import hashlib
 import hmac
@@ -278,6 +278,28 @@ def gallery_virtual_read(path: str, max_chars: int = 100000):
             return GALLERY_MODULE.gallery_similar({
                 "ids": ids, "threshold": int(one("threshold", "8"))})
         return GALLERY_MODULE.gallery_metadata({"id": int(route.split("/", 1)[1])})
+
+    # Sonoryx private OCR: accessible through the already-approved read_text MCP tool.
+    if route == "ocr/status":
+        return GALLERY_MODULE.gallery_ocr_status({})
+    if route == "ocr/search":
+        value = one("query", "")
+        return GALLERY_MODULE.gallery_ocr_search({
+            "query": value, "album": one("album", ""),
+            "limit": int(one("limit", "30")), "offset": int(one("offset", "0"))})
+    if route.startswith("ocr/text/"):
+        return GALLERY_MODULE.gallery_ocr_text({
+            "id": int(route.split("/", 2)[2]), "max_chars": int(one("max_chars", "8000"))})
+    if route == "ocr/index":
+        ids_text = one("ids", "")
+        args = {"max_images": int(one("max_images", "2")),
+                "max_seconds": int(one("max_seconds", "24")),
+                "languages": one("languages", "rus+lav+eng")}
+        if ids_text:
+            args["ids"] = [int(x) for x in ids_text.split(",") if x.strip()]
+        if one("album"):
+            args["album"] = one("album")
+        return GALLERY_MODULE.gallery_ocr_index(args)
 
     raise ValueError(
         "Unknown gallery virtual path; use gallery://image/ID, "

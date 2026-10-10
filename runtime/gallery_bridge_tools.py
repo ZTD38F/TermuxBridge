@@ -525,3 +525,7 @@ READ_ONLY = {
 # Sonoryx Photo Intelligence v2 — Dāvids Krūmiņš.
 from gallery_intelligence import install as _install_sonoryx_gallery
 _install_sonoryx_gallery(globals())
+
+# On-device OCR and full-text search; author Dāvids Krūmiņš.
+from gallery_ocr import install as _install_sonoryx_ocr
+_install_sonoryx_ocr(globals())
