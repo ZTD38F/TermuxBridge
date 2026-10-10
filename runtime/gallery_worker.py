@@ -28,6 +28,55 @@ def _stop(_signal, _frame):
     global STOP
     STOP = True
 
+
+
+def _full_state_root() -> Path:
+    return Path.home() / ".termux-mcp-bridge"
+
+
+def _full_status(private: Path) -> str:
+    status = private / "gallery_full_ocr_status.json"
+    if not status.is_file():
+        return "INCOMPLETE"
+    try:
+        return str(json.loads(status.read_text(encoding="utf-8")).get("state", "INCOMPLETE"))
+    except (OSError, ValueError):
+        return "INCOMPLETE"
+
+
+def _live_full_pid(private: Path) -> int | None:
+    pidfile = private / "gallery_full_ocr.pid"
+    try:
+        pid = int(pidfile.read_text(encoding="ascii").strip())
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except (OSError, ValueError):
+        return None
+    return pid if "gallery_full_ocr.py" in cmd else None
+
+
+def ensure_full_ocr(root: Path = ROOT, private: Path | None = None) -> dict:
+    private = private or _full_state_root()
+    enabled = private / "gallery_full_ocr.enabled"
+    if not enabled.exists():
+        return {"ok": True, "result": "FULL_OCR_DISABLED", "active": False}
+    if _full_status(private) == "COMPLETE":
+        return {"ok": True, "result": "FULL_OCR_COMPLETE", "active": False}
+    helper = root / "current" / "gallery_full_ocr.py"
+    if not helper.is_file():
+        return {"ok": False, "result": "FULL_OCR_HELPER_MISSING", "active": True}
+    pid = _live_full_pid(private)
+    if pid is not None:
+        return {"ok": True, "result": "FULL_OCR_RUNNING", "active": True, "pid": pid}
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root / "current")
+    try:
+        proc = subprocess.Popen([sys.executable, str(helper)], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True, env=env)
+    except OSError:
+        return {"ok": False, "result": "FULL_OCR_RESTART_FAILED", "active": True}
+    return {"ok": True, "result": "FULL_OCR_RESTARTED", "active": True, "pid": proc.pid}
+
 def single_iteration(root: Path = ROOT, *, timeout: int = 85) -> dict:
     path = root / "current" / "gallery_maintenance.py"
     if not path.is_file():
@@ -72,7 +121,8 @@ def main() -> int:
                 if DISABLE.exists():
                     write_status({"ok": True, "result": "DISABLED"})
                     break
-                result = single_iteration()
+                full = ensure_full_ocr()
+                result = full if full.get("active") else single_iteration()
                 write_status(result)
                 if once:
                     break
