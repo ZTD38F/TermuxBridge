@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.18"
+BRIDGE_VERSION = "1.2.19"
 
 import hashlib
 import hmac
@@ -122,9 +122,22 @@ _phone_read_only = {
     "list_apps", "get_setting", "get_hotspot_state", "audit_tail", "organizer_summary",
 }
 _phone_open_world = {"open_app", "open_settings_page", "import_chatgpt_export"}
+def _phone_public_name(source_name: str) -> str:
+    """Return the stable MCP name for a phone adapter tool without double-prefixing."""
+    return source_name if source_name.startswith("phone_") else f"phone_{source_name}"
+
+
+def _phone_source_name(public_name: str, source_tools=None) -> str:
+    """Accept canonical names plus the legacy phone_phone_* alias."""
+    tools = PHONE_TOOLS if source_tools is None else source_tools
+    if public_name in tools:
+        return public_name
+    return public_name.removeprefix("phone_")
+
+
 for _name, (_input_schema, _handler) in PHONE_TOOLS.items():
     TOOLS.append({
-        "name": f"phone_{_name}",
+        "name": _phone_public_name(_name),
         "title": f"Phone: {_name.replace('_',' ')}",
         "description": PHONE_MODULE.DESCRIPTIONS[_name],
         "inputSchema": _input_schema,
@@ -448,11 +461,11 @@ def call(name, a):
         argv = ["python", str(script), a["action"]]
         return start(argv, str(d)) if a.get("background", True) else run(argv, str(d), 120)
     if name.startswith("phone_"):
-        phone_name = name.removeprefix("phone_")
+        phone_name = _phone_source_name(name)
         if PHONE_MODULE is None or phone_name not in PHONE_TOOLS:
             raise ValueError(f"Unknown phone tool: {phone_name}")
         try:
-            value = ADAPTERS.invoke("phone",name,a)
+            value = ADAPTERS.invoke("phone", _phone_public_name(phone_name), a)
             ok = not (isinstance(value, dict) and value.get("ok") is False)
             PHONE_MODULE._audit(phone_name, ok, "completed" if ok else "capability unavailable or command failed")
             if not ok:
