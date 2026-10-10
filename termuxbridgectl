@@ -35,6 +35,32 @@ case "${1:-check}" in
   logs)
     tail -n "${2:-100}" "$ROOT/logs/update.log" 2>/dev/null || true
     ;;
+  dashboard)
+    exec python "$ROOT/current/ecosystem_cli.py" dashboard "$ROOT"
+    ;;
+  dashboard-html)
+    exec python "$ROOT/current/ecosystem_cli.py" html "$ROOT"
+    ;;
+  backup-create)
+    exec python "$ROOT/current/ecosystem_cli.py" backup-create "$ROOT"
+    ;;
+  backup-list)
+    exec python "$ROOT/current/ecosystem_cli.py" backup-list "$ROOT"
+    ;;
+  backup-verify)
+    [[ -n "${2:-}" ]] || { echo "Backup filename required" >&2; exit 2; }
+    exec python "$ROOT/current/ecosystem_cli.py" backup-verify "$ROOT" "$2"
+    ;;
+  backup-restore)
+    [[ -n "${2:-}" ]] || { echo "Backup filename required" >&2; exit 2; }
+    if [[ "${3:-}" == "--yes" ]]; then
+      exec python "$ROOT/current/ecosystem_cli.py" backup-restore "$ROOT" "$2" --yes
+    fi
+    exec python "$ROOT/current/ecosystem_cli.py" backup-restore "$ROOT" "$2"
+    ;;
+  chaos-test)
+    exec python "$ROOT/current/ecosystem_cli.py" chaos-test "$ROOT"
+    ;;
   auto-update-enable)
     [[ -x "$ROOT/maintain_bridge.sh" ]] || { echo "Maintenance script missing; update TermuxBridge first" >&2; exit 1; }
     # Android JobScheduler is opportunistic, not an exact hourly timer.
@@ -70,7 +96,7 @@ PY
     termux-job-scheduler --pending | grep -F "Job $JOB_ID:" || true
     ;;
   *)
-    echo "Usage: termuxbridgectl {check|status|update-status|update|update-now|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status|maintenance-now|maintenance-status}" >&2
+    echo "Usage: termuxbridgectl {check|status|update-status|update|update-now|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status|maintenance-now|maintenance-status|dashboard|dashboard-html|backup-create|backup-list|backup-verify|backup-restore|chaos-test}" >&2
     exit 2
     ;;
 esac
