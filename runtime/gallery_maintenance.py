@@ -17,7 +17,9 @@ def run() -> dict:
     import gallery_bridge_tools as g
     from gallery_ocr import battery_status
     battery = battery_status()
-    if not battery.get("available") or battery.get("level",0) < 35 or not battery.get("charging"):
+    temp = battery.get("temperature_c")
+    if (not battery.get("available") or battery.get("level",0) < 15
+        or not battery.get("charging") or (temp is not None and temp >= 43)):
         return {"ok":True,"result":"SKIPPED_POWER","battery":battery}
     root = Path.home() / ".termux-mcp-bridge"
     fs = os.statvfs(root)

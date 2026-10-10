@@ -93,12 +93,31 @@ class OcrTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["minimum_battery"],15)
 
-    def test_charging_20_percent_still_blocks_unattended_index(self):
-        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":20,"charging":True}), \
+    def test_charging_20_percent_allows_unattended_index(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":20,"charging":True,"temperature_c":30.0}), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"max_images":8,"languages":"eng"})
+        self.assertTrue(result["ok"],result)
+        self.assertEqual(result["recognized_ids"],[self.photo_id])
+
+    def test_thermal_guard_blocks_index(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":30,"charging":True,"temperature_c":43.1}), \
              patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
             result=self.g.gallery_ocr_index({"max_images":8,"languages":"eng"})
         self.assertFalse(result["ok"])
-        self.assertEqual(result["minimum_battery"],35)
+        self.assertEqual(result["minimum_battery"],15)
+
+    def test_processing_stops_if_charger_disconnected(self):
+        power=[{"available":True,"level":30,"charging":True,"temperature_c":31.0},
+               {"available":True,"level":30,"charging":False,"temperature_c":31.0}]
+        def next_power():
+            return power.pop(0) if power else {"available":True,"level":30,"charging":False}
+        with patch.object(gallery_ocr,"battery_status",side_effect=next_power), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"max_images":8,"languages":"eng"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["paused"],"POWER_OR_THERMAL_GUARD")
+        self.assertEqual(result["recognized_ids"],[])
 
     def test_low_battery_blocks_background_batch(self):
         with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":False}), \
@@ -109,7 +128,7 @@ class OcrTests(unittest.TestCase):
 
     @unittest.skipUnless(gallery_ocr.ocr_languages(), "Tesseract binary unavailable")
     def test_real_tesseract_single_photo(self):
-        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":False}):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":True,"temperature_c":27.0}):
             result=self.g.gallery_ocr_index({"ids":[self.photo_id],"max_images":1,
                                               "max_seconds":20,"languages":"eng"})
         self.assertTrue(result["ok"],result)

@@ -29,7 +29,8 @@ def battery_status() -> dict[str, Any]:
                                          check=True, timeout=5).stdout)
         level = int(data.get("percentage", data.get("level", -1)))
         plugged = str(data.get("plugged", "UNPLUGGED")).upper() not in ("UNPLUGGED", "NONE", "UNKNOWN", "")
-        return {"available": True, "level": level, "charging": plugged}
+        return {"available": True, "level": level, "charging": plugged,
+                "temperature_c": float(data["temperature"]) if isinstance(data.get("temperature"),(float,int)) else None}
     except (OSError, ValueError, subprocess.SubprocessError):
         return {"available": False}
 
@@ -154,16 +155,14 @@ def install(g: dict[str, Any]) -> None:
                 raise ValueError("ids must have 1..8 entries")
             cap = min(cap, len(requested_ids))
         battery = battery_status()
-        # Power policy: never process at critical charge, even if USB/AC is connected.
-        # Unattended OCR always requires a healthy battery and actual charging.
+        # User-enabled OCR while charging at >=15%, without the former 35% threshold.
+        # Hard stops preserve the photos and device if power disconnects or device overheats.
         level = battery.get("level", -1) if battery.get("available") else -1
         charging = battery.get("charging", False)
-        if level < 15 or (requested_ids is None and (level < 35 or not charging)):
-            return {"ok": False, "error": "OCR paused: battery too low or charging required",
-                    "battery": battery, "minimum_battery": 35 if requested_ids is None else 15}
-        if (not charging or level < 35) and (requested_ids is None or cap > 1):
-            return {"ok":False,"error":"batch OCR requires charging and battery >=35%",
-                    "battery":battery}
+        temperature = battery.get("temperature_c")
+        if level < 15 or not charging or (temperature is not None and temperature >= 43):
+            return {"ok": False, "error": "OCR paused: charging required, battery below 15%, or temperature >=43C",
+                    "battery": battery, "minimum_battery": 15}
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (state / "gallery_ocr.lock").open("a+") as file_lock:
             try:
@@ -194,8 +193,15 @@ def install(g: dict[str, Any]) -> None:
             skipped: list[int] = []
             failed: list[dict[str, Any]] = []
             start = time.monotonic()
+            paused = None
             for row in rows[:cap]:
                 if time.monotonic()-start >= seconds - 2:
+                    break
+                current_power = battery_status()
+                temp = current_power.get("temperature_c")
+                if (not current_power.get("available") or current_power.get("level",-1) < 15
+                    or not current_power.get("charging") or (temp is not None and temp >= 43)):
+                    paused = "POWER_OR_THERMAL_GUARD"
                     break
                 with db() as c:
                     _ensure(c)
@@ -223,8 +229,24 @@ def install(g: dict[str, Any]) -> None:
                     processed.append(row["id"])
                 except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
                     failed.append({"id":row["id"],"error":type(exc).__name__})
+                    # Source might vanish mid-processing; if unchanged, mark failure
+                    # so one unreadable photo cannot stall every future batch.
+                    try:
+                        _path(row)
+                        with db() as c:
+                            _ensure(c)
+                            c.execute("DELETE FROM gallery_ocr_fts WHERE rowid=?", (row["id"],))
+                            c.execute("""INSERT INTO gallery_ocr_index
+                                      (image_id,size,mtime,languages,processed_at,text_length,error)
+                                      VALUES(?,?,?,?,?,0,?)
+                                      ON CONFLICT(image_id) DO UPDATE SET
+                                      size=excluded.size,mtime=excluded.mtime,languages=excluded.languages,
+                                      processed_at=excluded.processed_at,text_length=0,error=excluded.error""",
+                                      (row["id"],row["size"],row["mtime"],languages,time.time(),type(exc).__name__))
+                    except (OSError,ValueError):
+                        pass
             return {"ok":True,"recognized_ids":processed,"skipped_cached_ids":skipped,
-                    "errors":failed,"elapsed_seconds":round(time.monotonic()-start,2),
+                    "errors":failed,"paused":paused,"elapsed_seconds":round(time.monotonic()-start,2),
                     "battery":battery,"model":"tesseract-local","source_photos_modified":False}
 
     def text(args: dict[str, Any]) -> dict[str, Any]:
