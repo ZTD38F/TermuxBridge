@@ -29,7 +29,10 @@ MAX_OUTPUT = 1000000
 _CPU_LIMIT_SHIM = (
     "import os,resource,sys;"
     "n=int(sys.argv[1]);"
-    "resource.setrlimit(resource.RLIMIT_CPU,(n,n+2));"
+    "hard=resource.getrlimit(resource.RLIMIT_CPU)[1];"
+    "soft=min(n,hard) if hard!=resource.RLIM_INFINITY else n;"
+    "ceiling=min(n+2,hard) if hard!=resource.RLIM_INFINITY else n+2;"
+    "resource.setrlimit(resource.RLIMIT_CPU,(soft,ceiling));"
     "os.execvpe(sys.argv[2],sys.argv[2:],os.environ)"
 )
 
