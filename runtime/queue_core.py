@@ -72,7 +72,10 @@ def safe_script(value, root=None):
     p = Path(value).expanduser()
     if not p.is_absolute():
         p = root / p
-    path = p.resolve(strict=True)
+    try:
+        path = p.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("script does not exist") from exc
     if path.suffix != ".sh" or not path.is_file() or not path.is_relative_to(root):
         raise ValueError("script must be existing .sh inside TermuxBridge root")
     return str(path)
