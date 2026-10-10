@@ -17,6 +17,9 @@ import sys
 import time
 import urllib.request
 
+SUPERVISOR_PORT = 8765
+BACKEND_PORTS = (18771, 18772)
+
 
 def load(path):
     try:
@@ -68,7 +71,7 @@ def _probe(root,port,pid):
 
 def _supervisor_status(root):
     token=(root/"secrets/router_token").read_text().strip()
-    req=urllib.request.Request("http://127.0.0.1:8765/__bridge/status",
+    req=urllib.request.Request(f"http://127.0.0.1:{SUPERVISOR_PORT}/__bridge/status",
                                headers={"X-Bridge-Token":token})
     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(req,timeout=3) as rsp:
@@ -98,10 +101,10 @@ def _pid_verified(pid,script,port):
 
 
 def _choose_port(active):
-    if active==18771:
-        return 18772
-    if active==18772:
-        return 18771
+    if active==BACKEND_PORTS[0]:
+        return BACKEND_PORTS[1]
+    if active==BACKEND_PORTS[1]:
+        return BACKEND_PORTS[0]
     raise ValueError("unexpected active port")
 
 
@@ -137,8 +140,12 @@ def attempt(root=None):
             if server.get("active_generation")!=current or server.get("active_port")!=old_route["port"]:
                 return {"result":"SUPERVISOR_ROUTE_CHANGED"}
             active_pid=int((root/"server.pid").read_text())
-            if _probe(root,old_route["port"],active_pid):
-                return {"result":"ALREADY_RECOVERED"}
+            try:
+                if _probe(root,old_route["port"],active_pid):
+                    return {"result":"ALREADY_RECOVERED"}
+            except (OSError, ValueError):
+                # A refused active backend connection is the rollback trigger.
+                pass
         except (OSError,ValueError,KeyError):
             return {"result":"SUPERVISOR_UNVERIFIED"}
 
@@ -180,7 +187,7 @@ def attempt(root=None):
             switched=True
             if not _probe(root,port,proc.pid):
                 raise RuntimeError("post-switch probe failed")
-            if _tools(root,8765,"X-Bridge-Token","router_token")!=candidate_contract:
+            if _tools(root,SUPERVISOR_PORT,"X-Bridge-Token","router_token")!=candidate_contract:
                 raise RuntimeError("supervisor is not serving rollback candidate")
             if _supervisor_status(root).get("active_generation")!=prev:
                 raise RuntimeError("supervisor route not switched")
@@ -211,7 +218,7 @@ def attempt(root=None):
                 # Drain in-flight requests rather than killing an active MCP call.
                 try:
                     token=(root/"secrets/router_token").read_text().strip()
-                    req=urllib.request.Request("http://127.0.0.1:8765/__bridge/status",
+                    req=urllib.request.Request(f"http://127.0.0.1:{SUPERVISOR_PORT}/__bridge/status",
                                                headers={"X-Bridge-Token":token})
                     with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=3) as rsp:
                         in_flight=json.load(rsp).get("inflight",{}).get(current,0)
