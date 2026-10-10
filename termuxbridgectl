@@ -60,7 +60,7 @@ case "${1:-check}" in
       python - "$ROOT/state/maintenance.json" <<'PY'
 import json,sys
 s=json.load(open(sys.argv[1]))
-for key in ("last_checked_at","last_success_at","result","reason","consecutive_failures","installed_generation","active_generation","update_phase","tunnel_state","startup_exit_code","updater_exit_code","free_storage_mb"):
+for key in ("last_checked_at","last_success_at","result","reason","consecutive_failures","installed_generation","active_generation","update_phase","tunnel_state","startup_exit_code","updater_exit_code","free_storage_mb","fault_code","severity","recommended_action"):
     print(key.upper(),s.get(key,"UNKNOWN"))
 PY
     else
