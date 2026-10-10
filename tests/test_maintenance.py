@@ -147,7 +147,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn('--period-ms 3600000', ctl)
         self.assertIn('--persisted true', ctl)
         self.assertIn('--script "$ROOT/maintain_bridge.sh"', ctl)
-        self.assertIn('maintain_bridge.sh)', up)
+        self.assertIn('maintain_bridge.sh boot_bridge.sh)', up)
         self.assertIn('cp -a "$source_root/runtime/maintain_bridge.sh"', up)
         self.assertIn('8>&- >>"$LOG" 2>&1', MAINTAIN.read_text())
 
