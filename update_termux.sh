@@ -39,8 +39,9 @@ RUNTIME_FILES=(
   execution_core.py
   queue_core.py
   rollback_guard.py
+  autonomy_engine.py
 )
-MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh)
+MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh boot_bridge.sh)
 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
@@ -257,6 +258,16 @@ install_management_from_stage() {
   fi
   cp -a "$source_root/runtime/gpt" "$gpt_target"
   chmod 700 "$gpt_target"
+  # Install only our own managed boot hook; never overwrite user scripts.
+  mkdir -p "$HOME/.termux/boot"
+  local boot_target="$HOME/.termux/boot/20-termuxbridge.sh"
+  if [[ ! -e "$boot_target" ]] || grep -Fq 'TermuxBridge managed boot hook' "$boot_target" 2>/dev/null; then
+    cp -a "$source_root/runtime/boot_bridge.sh" "$boot_target.next"
+    chmod 700 "$boot_target.next"
+    mv -f "$boot_target.next" "$boot_target"
+  else
+    log "custom Termux:Boot hook exists; left unchanged"
+  fi
   chmod 700 "$ROOT/start_bridge.sh" "$ROOT/status_bridge.sh" "$ROOT/stop_bridge.sh" "$ROOT/update_termux.sh" "$HOME/bin/termuxbridgectl"
   chmod 600 "$ROOT/supervisor.py" "$ROOT/recover_bridge_port.py" "$ROOT/tunnel_watchdog.py"
 }
@@ -399,7 +410,7 @@ done
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
 
 python -m py_compile "$TMP/source/runtime/"*.py
-for file in start_bridge.sh status_bridge.sh stop_bridge.sh maintain_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
+for file in start_bridge.sh status_bridge.sh stop_bridge.sh maintain_bridge.sh boot_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
 bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl" "$TMP/source/runtime/gpt"
 journal VERIFIED_ARTIFACT
 

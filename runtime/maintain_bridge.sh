@@ -33,6 +33,12 @@ rotate_log
 printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "maintenance started" >>"$LOG"
 start_rc=0
 update_rc=0
+autonomy="$ROOT/current/autonomy_engine.py"
+# Old verified releases remain compatible if the helper isn't installed yet.
+network_due="RUN"
+if [[ -f "$autonomy" ]]; then
+  network_due="$(python "$autonomy" policy "$ROOT" 2>>"$LOG")" || network_due="RUN"
+fi
 
 if [[ -x "$ROOT/start_bridge.sh" ]]; then
   "$ROOT/start_bridge.sh" 8>&- >>"$LOG" 2>&1 || start_rc=$?
@@ -41,19 +47,22 @@ else
   echo "Local startup script is unavailable" >>"$LOG"
 fi
 
-if [[ -x "$ROOT/update_termux.sh" ]]; then
-  # Do not force a same-version reinstall every hour.
-  # The transactional updater checks the latest stable published release,
-  # validates SHA-256 and MCP schemas, and does not restart a healthy tunnel.
-  # Execute a private snapshot: an updater must never overwrite its own script.
+if [[ "$network_due" == "SKIP" ]]; then
+  echo "Power policy: verified release check deferred; local health still checked" >>"$LOG"
+elif [[ -x "$ROOT/update_termux.sh" ]]; then
+  # Execute a private snapshot so an in-progress upgrade cannot change its
+  # own script. Clean up even if the network check fails.
   updater_snapshot="$(mktemp "$ROOT/state/.updater-run.XXXXXX")"
   cp "$ROOT/update_termux.sh" "$updater_snapshot"
   chmod 700 "$updater_snapshot"
   "$updater_snapshot" 8>&- >>"$LOG" 2>&1 || update_rc=$?
   rm -f "$updater_snapshot"
+  if [[ "$update_rc" -eq 0 && -f "$ROOT/current/autonomy_engine.py" ]]; then
+    python "$ROOT/current/autonomy_engine.py" record-update "$ROOT" >>"$LOG" 2>&1 || true
+  fi
 else
   update_rc=127
-  echo "Verified update script is unavailable" >>"$LOG"
+  echo "Verified update script unavailable" >>"$LOG"
 fi
 
 # Inspect all managed PIDs and authenticated localhost services, not just version strings.
@@ -80,6 +89,11 @@ if [[ -f "$rollback_script" ]]; then
   fi
 fi
 
+# Notifications are best-effort, rate limited, local-only, and must not
+# turn a healthy bridge into a failure if Android denies notification access.
+if [[ -f "$ROOT/current/autonomy_engine.py" ]]; then
+  python "$ROOT/current/autonomy_engine.py" alerts "$ROOT" >>"$LOG" 2>&1 || true
+fi
 printf '%s completed: start=%s update=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$start_rc" "$update_rc" >>"$LOG"
 rotate_log
 if [[ "$update_rc" -eq 75 ]]; then

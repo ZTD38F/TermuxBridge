@@ -150,6 +150,14 @@ def evaluate(root: Path, start_rc: int, update_rc: int,
     else:
         result, reason = "OK", "NONE"
 
+    try:
+        from autonomy_engine import hung_operations, classify
+    except ImportError:
+        from .autonomy_engine import hung_operations, classify
+    hung = hung_operations(root, int(now.timestamp()))
+    if hung and result == "OK":
+        result, reason = "DEGRADED", "HUNG_OPERATION_DETECTED"
+
     attempts = previous.get("consecutive_failures", 0)
     if not isinstance(attempts, int) or attempts < 0:
         attempts = 0
@@ -166,7 +174,14 @@ def evaluate(root: Path, start_rc: int, update_rc: int,
         free_mb = shutil.disk_usage(root).free // (1024 * 1024)
     except OSError:
         free_mb = None
+    fault = classify({
+        "local_processes":checks, "verified_active_generation":bool(consistent),
+        "updater_exit_code":update_rc, "free_storage_mb":free_mb,
+        "tunnel_state":tunnel.get("state"),
+    }, hung=hung)
     return {
+        **fault,
+        "hung_operations":hung,
         "last_checked_at": now.isoformat(timespec="seconds"),
         "last_success_at": last_success,
         "result": result,
