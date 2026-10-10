@@ -3,11 +3,35 @@
 from __future__ import annotations
 import json
 import sys
+import urllib.request
 from pathlib import Path
 try:
     from . import ecosystem_core as core
 except ImportError:
     import ecosystem_core as core
+
+
+def live_adapters(root):
+    """Fetch adapter status through the protected localhost MCP router only."""
+    try:
+        token=(root/"secrets/router_token").read_text().strip()
+        if len(token)<32:
+            raise ValueError("router token unavailable")
+        request=urllib.request.Request(
+            "http://127.0.0.1:8765/mcp",
+            data=json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                             "params":{"name":"ecosystem_adapter_status","arguments":{}}}).encode(),
+            headers={"Content-Type":"application/json","X-Bridge-Token":token},
+        )
+        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request,timeout=4) as rsp:
+            response=json.load(rsp)
+        result=response["result"]
+        if result.get("isError"):
+            return {}
+        return json.loads(result["content"][0]["text"])
+    except (OSError,ValueError,KeyError,TypeError,TimeoutError):
+        return {}
 
 
 def main(argv=None):
@@ -17,16 +41,16 @@ def main(argv=None):
     cmd,root=argv[:2]
     root=Path(root).expanduser().resolve()
     if cmd=="dashboard":
-        info=core.dashboard(root)
+        info=core.dashboard(root,adapters=live_adapters(root))
         print("TERMUXBRIDGE ECOSYSTEM — LOCAL")
         for key in ("bridge_version","health","fault","severity","tunnel_state",
                     "last_checked","update_phase","battery_mode","battery_percent",
                     "storage_free_mb","backups","remote_connectivity_verified"):
             print(f"{key.upper():32} {info.get(key)}")
         print("QUEUE",json.dumps(info["queue"],sort_keys=True))
-        print("ADAPTERS: use MCP ecosystem_adapter_status for live state")
+        print("ADAPTERS",json.dumps(info["adapters"],sort_keys=True))
     elif cmd=="html":
-        print(core.dashboard(root,html_file=True)["path"])
+        print(core.dashboard(root,adapters=live_adapters(root),html_file=True)["path"])
     elif cmd=="backup-create":
         print(json.dumps(core.backup_create(root),sort_keys=True))
     elif cmd=="backup-list":
