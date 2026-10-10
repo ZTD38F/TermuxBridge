@@ -197,9 +197,17 @@ def process_next(root=None):
     halt=threading.Event()
 
     def poll_cancel():
+        # Each running queue task refreshes a durable heartbeat; a dead worker
+        # becomes detectable without guessing from long-but-valid task duration.
+        last_beat = 0
         while not halt.wait(.3):
             try:
                 with contextlib.closing(queue_db(root)) as db:
+                    now = int(time.time())
+                    if now - last_beat >= 5:
+                        db.execute("UPDATE queue SET updated_at=? WHERE id=? AND state='RUNNING'",(now,jid))
+                        db.commit()
+                        last_beat=now
                     item=db.execute("SELECT cancel_requested FROM queue WHERE id=?",(jid,)).fetchone()
                     if item and item[0]:
                         stopped.set()
