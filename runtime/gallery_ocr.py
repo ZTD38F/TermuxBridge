@@ -353,13 +353,14 @@ def install(g: dict[str, Any]) -> None:
     tools["gallery_status"] = (schema(),status)
     tools["gallery_search"] = (tools["gallery_search"][0],combined)
     tools["gallery_ocr_status"] = (schema(),status)
+    # Keep the public MCP contract stable. Full-gallery mode invokes index()
+    # internally with larger private limits and allow_on_battery=True.
     tools["gallery_ocr_index"] = (schema({
         "ids":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"integer","minimum":1}},
         "album":{"type":"string"},
-        "max_images":{"type":"integer","minimum":1,"maximum":16,"default":2},
-        "max_seconds":{"type":"integer","minimum":3,"maximum":180,"default":24},
-        "languages":{"type":"string","default":"rus+lav+eng"},
-        "allow_on_battery":{"type":"boolean","default":False}
+        "max_images":{"type":"integer","minimum":1,"maximum":8,"default":2},
+        "max_seconds":{"type":"integer","minimum":3,"maximum":60,"default":24},
+        "languages":{"type":"string","default":"rus+lav+eng"}
     }),index)
     tools["gallery_ocr_text"] = (schema({"id":{"type":"integer","minimum":1},
                                       "max_chars":{"type":"integer","minimum":1,"maximum":16000}},["id"]),text)
