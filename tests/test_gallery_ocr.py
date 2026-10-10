@@ -86,6 +86,20 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(self.g.gallery_ocr_search({"query":"OLD"})["total"],0)
         self.assertFalse(self.g.gallery_ocr_text({"id":self.photo_id})["ok"])
 
+    def test_critical_battery_even_on_charger_blocks_selected_photo(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":6,"charging":True}), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"ids":[self.photo_id],"max_images":1,"languages":"eng"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["minimum_battery"],15)
+
+    def test_charging_20_percent_still_blocks_unattended_index(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":20,"charging":True}), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"max_images":8,"languages":"eng"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["minimum_battery"],35)
+
     def test_low_battery_blocks_background_batch(self):
         with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":False}), \
              patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):

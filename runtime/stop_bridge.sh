@@ -22,7 +22,20 @@ stop_pidfile() {
   fi
 }
 
+stop_gallery_worker() {
+  local file="$ROOT/state/gallery_worker.pid" pid="" cmd=""
+  [[ -s "$file" ]] || return 0
+  pid="$(cat "$file" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && -r "/proc/$pid/cmdline" ]]; then
+    cmd="$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    if [[ "$cmd" == *"/gallery_worker.py"* ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  fi
+}
+
 # Manual/full shutdown only. Seamless runtime updates do not call this script.
+stop_gallery_worker
 # Stop the supervisor first; otherwise it would restart the tunnel immediately.
 stop_pidfile "$ROOT/watchdog.pid" watchdog
 stop_pidfile "$ROOT/bridge.pid" tunnel

@@ -135,6 +135,26 @@ else
   write_route "$CURRENT_GENERATION" "$CURRENT_PORT"
 fi
 
+start_gallery_worker() {
+  # Persistent read-only photo maintenance, independent of Android JobScheduler.
+  # All CPU-heavy tasks are protected by gallery_maintenance battery checks.
+  [[ -f "$CURRENT_DIR/gallery_worker.py" ]] || return 0
+  [[ ! -f "$STATE_DIR/gallery_worker.disabled" ]] || return 0
+  local pid="" cmd=""
+  if [[ -s "$STATE_DIR/gallery_worker.pid" ]]; then
+    pid="$(cat "$STATE_DIR/gallery_worker.pid" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && -r "/proc/$pid/cmdline" ]]; then
+      cmd="$(tr '\000' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+      if [[ "$cmd" == *"/gallery_worker.py"* ]] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+      fi
+    fi
+  fi
+  # Lock held by the worker prevents duplicates even after a stale PID file.
+  nohup python "$CURRENT_DIR/gallery_worker.py" >"$BRIDGE_DIR/logs/gallery_worker.log" 2>&1 9>&- &
+  return 0
+}
+
 start_tunnel_watchdog() {
   [[ -f "$BRIDGE_DIR/tunnel_watchdog.py" ]] || {
     echo "ERROR: tunnel watchdog missing" >&2; return 1;
@@ -158,6 +178,7 @@ start_tunnel_watchdog() {
 # A tunnel failure MUST NOT restart a healthy authenticated MCP stack.
 if pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
    proxy_healthy && backend_health "$CURRENT_PORT" && router_health; then
+  start_gallery_worker
   start_tunnel_watchdog
   exit $?
 fi
@@ -221,4 +242,5 @@ if ! start_tunnel_watchdog; then
   exit 4
 fi
 trap - ERR INT TERM
+start_gallery_worker
 echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."
