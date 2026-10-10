@@ -521,3 +521,7 @@ READ_ONLY = {
     "gallery_status", "gallery_albums", "gallery_list", "gallery_thumbnail",
     "gallery_get_image", "gallery_get_images", "gallery_contact_sheet",
 }
+
+# Sonoryx Photo Intelligence v2 — Dāvids Krūmiņš.
+from gallery_intelligence import install as _install_sonoryx_gallery
+_install_sonoryx_gallery(globals())
