@@ -27,7 +27,8 @@ def load(path):
 
 
 def eligible(root, snapshot):
-    if snapshot.get("consecutive_failures",0) < 3:
+    attempts=snapshot.get("consecutive_failures",0)
+    if not isinstance(attempts,int) or attempts < 3:
         return False
     processes=snapshot.get("local_processes",{})
     if not (processes.get("supervisor") and processes.get("supervisor_http")):
@@ -63,6 +64,25 @@ def _probe(root,port,pid):
     with opener.open(request,timeout=2) as rsp:
         obj=json.load(rsp)
     return obj.get("ok") is True and obj.get("pid")==pid
+
+
+def _supervisor_status(root):
+    token=(root/"secrets/router_token").read_text().strip()
+    req=urllib.request.Request("http://127.0.0.1:8765/__bridge/status",
+                               headers={"X-Bridge-Token":token})
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req,timeout=3) as rsp:
+        return json.load(rsp)
+
+
+def _tools(root,port,header,key_file):
+    token=(root/"secrets"/key_file).read_text().strip()
+    payload=json.dumps({"jsonrpc":"2.0","id":101,"method":"tools/list","params":{}}).encode()
+    req=urllib.request.Request(f"http://127.0.0.1:{port}/mcp",data=payload,
+                               headers={"Content-Type":"application/json",header:token})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req,timeout=5) as rsp:
+        response=json.load(rsp)
+    return {t["name"]:t["inputSchema"] for t in response["result"]["tools"]}
 
 
 def _pid_verified(pid,script,port):
@@ -112,6 +132,16 @@ def attempt(root=None):
             if sock.connect_ex(("127.0.0.1",port))==0:
                 return {"result":"PORT_OCCUPIED"}
 
+        try:
+            server=_supervisor_status(root)
+            if server.get("active_generation")!=current or server.get("active_port")!=old_route["port"]:
+                return {"result":"SUPERVISOR_ROUTE_CHANGED"}
+            active_pid=int((root/"server.pid").read_text())
+            if _probe(root,old_route["port"],active_pid):
+                return {"result":"ALREADY_RECOVERED"}
+        except (OSError,ValueError,KeyError):
+            return {"result":"SUPERVISOR_UNVERIFIED"}
+
         log=root/"logs"/("rollback-"+prev[:12]+".log")
         log.parent.mkdir(parents=True,exist_ok=True)
         env=os.environ.copy()
@@ -142,15 +172,18 @@ def attempt(root=None):
                 return {"result":"CANDIDATE_UNVERIFIED"}
             if not _probe(root,port,proc.pid):
                 return {"result":"CANDIDATE_UNHEALTHY"}
-            # Compare the previous backend's registered tools against its own
-            # installed schema; no longer-running candidate is modified.
             old_pid=int((root/"server.pid").read_text())
-            if load(root/"state/route.json")!=old_route:
-                return {"result":"ROUTE_CHANGED"}
+            candidate_contract=_tools(root,port,"X-Bridge-Backend-Token","backend_token")
+            if not candidate_contract or load(root/"state/route.json")!=old_route:
+                return {"result":"CONTRACT_OR_ROUTE_INVALID"}
             save_json(root/"state/route.json",{"generation":prev,"port":port})
             switched=True
             if not _probe(root,port,proc.pid):
                 raise RuntimeError("post-switch probe failed")
+            if _tools(root,8765,"X-Bridge-Token","router_token")!=candidate_contract:
+                raise RuntimeError("supervisor is not serving rollback candidate")
+            if _supervisor_status(root).get("active_generation")!=prev:
+                raise RuntimeError("supervisor route not switched")
             # Atomic activation of the previously checksum-verified generation.
             tmp=root/".current.rollback-tmp"
             tmp.symlink_to(prior)
