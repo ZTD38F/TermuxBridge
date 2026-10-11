@@ -43,7 +43,10 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build release artifacts
         run: |
-          tar -czf "TermuxBridge-$TAG.tar.gz" \
+          bundle="$(mktemp -d)"
+          trap 'rm -rf "$bundle"' EXIT
+          bash build_release_bundle.sh "$bundle/root"
+          tar -C "$bundle/root" -czf "$GITHUB_WORKSPACE/TermuxBridge-$TAG.tar.gz" \
             runtime update_termux.sh termuxbridgectl TUNNEL_CLIENT_VERSION README.md SECURITY.md
           sha256sum "TermuxBridge-$TAG.tar.gz" > SHA256SUMS.txt
           python - <<'PY'
