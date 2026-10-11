@@ -126,12 +126,6 @@ CURRENT_GENERATION="$(cat "$BRIDGE_DIR/source_commit" 2>/dev/null || echo legacy
 CURRENT_PORT=18771
 ADDONS_ROOT="${TERMUX_BRIDGE_ADDONS_ROOT:-$HOME/.termux-mcp-bridge/addons}"
 
-external_namespace_claimed() {
-  local namespace="$1"
-  [[ -f "$CURRENT_DIR/addon_services.py" ]] || return 1
-  [[ "$(python "$CURRENT_DIR/addon_services.py" claims --root "$ADDONS_ROOT" --namespace "$namespace" 2>/dev/null || true)" == "yes" ]]
-}
-
 start_external_addons() {
   [[ -f "$CURRENT_DIR/addon_services.py" ]] || return 0
   mkdir -p "$BRIDGE_DIR/logs"
@@ -147,42 +141,6 @@ PY
 else
   write_route "$CURRENT_GENERATION" "$CURRENT_PORT"
 fi
-
-start_full_gallery_ocr() {
-  external_namespace_claimed "gallery_" && return 0
-  local state="$HOME/.termux-mcp-bridge"
-  [[ -f "$CURRENT_DIR/gallery_full_ocr.py" && -f "$state/gallery_full_ocr.enabled" ]] || return 0
-  if [[ -f "$state/gallery_full_ocr_status.json" ]] && grep -Fq '"state": "COMPLETE"' "$state/gallery_full_ocr_status.json"; then
-    return 0
-  fi
-  local pid=""
-  if [[ -s "$state/gallery_full_ocr.pid" ]]; then
-    pid="$(cat "$state/gallery_full_ocr.pid" 2>/dev/null || true)"
-    [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && return 0
-  fi
-  nohup env PYTHONPATH="$CURRENT_DIR" python "$CURRENT_DIR/gallery_full_ocr.py" >"$BRIDGE_DIR/logs/gallery_full_ocr.log" 2>&1 9>&- &
-}
-
-start_gallery_worker() {
-  external_namespace_claimed "gallery_" && return 0
-  # Persistent read-only photo maintenance, independent of Android JobScheduler.
-  # All CPU-heavy tasks are protected by gallery_maintenance battery checks.
-  [[ -f "$CURRENT_DIR/gallery_worker.py" ]] || return 0
-  [[ ! -f "$STATE_DIR/gallery_worker.disabled" ]] || return 0
-  local pid="" cmd=""
-  if [[ -s "$STATE_DIR/gallery_worker.pid" ]]; then
-    pid="$(cat "$STATE_DIR/gallery_worker.pid" 2>/dev/null || true)"
-    if [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && -r "/proc/$pid/cmdline" ]]; then
-      cmd="$(tr '\000' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
-      if [[ "$cmd" == *"/gallery_worker.py"* ]] && kill -0 "$pid" 2>/dev/null; then
-        return 0
-      fi
-    fi
-  fi
-  # Lock held by the worker prevents duplicates even after a stale PID file.
-  nohup python "$CURRENT_DIR/gallery_worker.py" >"$BRIDGE_DIR/logs/gallery_worker.log" 2>&1 9>&- &
-  return 0
-}
 
 start_tunnel_watchdog() {
   [[ -f "$BRIDGE_DIR/tunnel_watchdog.py" ]] || {
@@ -208,8 +166,6 @@ start_tunnel_watchdog() {
 if pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
    proxy_healthy && backend_health "$CURRENT_PORT" && router_health; then
   start_external_addons
-  start_full_gallery_ocr
-  start_gallery_worker
   start_tunnel_watchdog
   exit $?
 fi
@@ -274,6 +230,4 @@ if ! start_tunnel_watchdog; then
 fi
 trap - ERR INT TERM
 start_external_addons
-start_full_gallery_ocr
-start_gallery_worker
 echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."

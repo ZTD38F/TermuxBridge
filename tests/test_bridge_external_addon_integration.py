@@ -20,8 +20,8 @@ class BridgeExternalAddonIntegration(unittest.TestCase):
             self._addon(tmp,'demo-addon','demo_','demo_echo')
             out=self._run(tmp,"import bridge_server as b,json; print(json.dumps({'listed':any(x['name']=='demo_echo' for x in b.TOOLS),'value':b.call('demo_echo',{'value':9}),'addons':b.call('addon_status',{})}))")
             data=json.loads(out);self.assertTrue(data['listed']);self.assertEqual(data['value']['value'],9);self.assertIn('demo-addon',data['addons']['addons'])
-    def test_external_gallery_namespace_disables_legacy(self):
+    def test_arbitrary_external_namespace_needs_no_builtin(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self._addon(tmp,'photo-addon','gallery_','gallery_external_probe')
-            out=self._run(tmp,"import bridge_server as b,json; print(json.dumps({'legacy':b.GALLERY_MODULE is not None,'listed':any(x['name']=='gallery_external_probe' for x in b.TOOLS)}))")
-            data=json.loads(out);self.assertFalse(data['legacy']);self.assertTrue(data['listed'])
+            self._addon(tmp,'media-addon','media_','media_probe')
+            out=self._run(tmp,"import bridge_server as b,json; print(json.dumps({'legacy_symbol':hasattr(b,'MEDIA_MODULE'),'listed':any(x['name']=='media_probe' for x in b.TOOLS),'value':b.call('media_probe',{'value':4})}))")
+            data=json.loads(out);self.assertFalse(data['legacy_symbol']);self.assertTrue(data['listed']);self.assertEqual(data['value']['value'],4)

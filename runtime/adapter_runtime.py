@@ -18,7 +18,6 @@ FAILURE_THRESHOLD = 3
 # not the versions of third-party Android apps.
 BUILTINS = {
     "phone": {"version":"1.0.0","abi":1,"bridge_major":1,"namespace":"phone_"},
-    "gallery":{"version":"1.0.0","abi":1,"bridge_major":1,"namespace":"gallery_"},
     "google":{"version":"1.0.0","abi":1,"bridge_major":1,"namespace":"google_"},
 }
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
