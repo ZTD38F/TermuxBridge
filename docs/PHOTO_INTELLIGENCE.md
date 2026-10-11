@@ -72,3 +72,14 @@ OCR processing. The runtime rechecks power before each file; work stays local.
 Unreadable but unchanged images are logged so they cannot block later batches.
 
 At v1.2.24 the gallery worker opportunistically attempts OCR every 5 minutes instead of every 30 minutes. Jobs remain capped at eight photos per run; temperature and charger state are checked before each photo.
+
+
+## Unrestricted continuous full mode (v1.2.28)
+User-requested full local mode removes Photo Intelligence's application-level
+battery, charging, temperature, batch-count and short time-budget gates for the
+private full-gallery runner. The public MCP contract remains unchanged.
+The runner checkpoints progress between large internal batches and continues to
+100% coverage without waiting for charging state. It also scans hidden readable
+directories under shared storage. Android/data, Android/obb, /data/data and other
+OS-protected locations remain inaccessible unless Android itself grants access/root.
+Android/kernel hardware protections are not modified.

@@ -147,8 +147,8 @@ def install(g: dict[str, Any]) -> None:
         if not requested or any(x not in RECOGNITION_LANGUAGES or x not in available for x in requested):
             raise ValueError("only installed rus, lav, eng languages are supported")
         languages = "+".join(dict.fromkeys(requested))
-        cap = max(1, min(16, int(arguments.get("max_images", 2))))
-        seconds = max(3, min(180, int(arguments.get("max_seconds", 24))))
+        cap = max(1, min(512 if arguments.get("unrestricted") else 16, int(arguments.get("max_images", 2))))
+        seconds = max(3, min(7200 if arguments.get("unrestricted") else 180, int(arguments.get("max_seconds", 24))))
         requested_ids = arguments.get("ids")
         if requested_ids is not None:
             if not isinstance(requested_ids, list) or not 1 <= len(requested_ids) <= 8:
@@ -160,11 +160,13 @@ def install(g: dict[str, Any]) -> None:
         level = battery.get("level", -1) if battery.get("available") else -1
         charging = battery.get("charging", False)
         temperature = battery.get("temperature_c")
+        unrestricted = bool(arguments.get("unrestricted", False))
         allow_on_battery = bool(arguments.get("allow_on_battery", False))
-        minimum = 25 if allow_on_battery and not charging else 15
-        if level < minimum or (not charging and not allow_on_battery) or (temperature is not None and temperature >= 43):
-            return {"ok": False, "error": "OCR paused by power or thermal guard",
-                    "battery": battery, "minimum_battery": minimum}
+        if not unrestricted:
+            minimum = 25 if allow_on_battery and not charging else 15
+            if level < minimum or (not charging and not allow_on_battery) or (temperature is not None and temperature >= 43):
+                return {"ok": False, "error": "OCR paused by power or thermal guard",
+                        "battery": battery, "minimum_battery": minimum}
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (state / "gallery_ocr.lock").open("a+") as file_lock:
             try:
@@ -202,12 +204,13 @@ def install(g: dict[str, Any]) -> None:
                 current_power = battery_status()
                 temp = current_power.get("temperature_c")
                 current_charging = current_power.get("charging", False)
-                current_minimum = 25 if allow_on_battery and not current_charging else 15
-                if (not current_power.get("available") or current_power.get("level",-1) < current_minimum
-                    or (not current_charging and not allow_on_battery)
-                    or (temp is not None and temp >= 43)):
-                    paused = "POWER_OR_THERMAL_GUARD"
-                    break
+                if not unrestricted:
+                    current_minimum = 25 if allow_on_battery and not current_charging else 15
+                    if (not current_power.get("available") or current_power.get("level",-1) < current_minimum
+                        or (not current_charging and not allow_on_battery)
+                        or (temp is not None and temp >= 43)):
+                        paused = "POWER_OR_THERMAL_GUARD"
+                        break
                 with db() as c:
                     _ensure(c)
                     existing = c.execute("SELECT size,mtime,languages,error FROM gallery_ocr_index WHERE image_id=?",

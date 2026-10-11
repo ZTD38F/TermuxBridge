@@ -96,8 +96,20 @@ def install(g: dict[str, Any]) -> None:
             for parent, dirs, filenames in os.walk(root, followlinks=False, onerror=err):
                 parent_path = Path(parent)
                 relative_parent = str(parent_path.relative_to(root))
-                dirs[:] = [d for d in dirs if g["_visible_dir"](d, relative_parent)
-                           and not (parent_path / d).is_symlink()]
+                # Full-access mode: traverse every readable directory under shared
+                # storage, including dot/cache/trash directories. Only skip Android's
+                # protected data/obb trees and symlinks; those are outside Termux's
+                # effective OS permissions or can escape the shared-storage root.
+                kept = []
+                for d in dirs:
+                    child = parent_path / d
+                    if child.is_symlink():
+                        continue
+                    rel_child = str(child.relative_to(root)).replace("\\", "/").lower()
+                    if rel_child in {"android/data", "android/obb"} or rel_child.startswith("android/data/") or rel_child.startswith("android/obb/"):
+                        continue
+                    kept.append(d)
+                dirs[:] = kept
                 for name in filenames:
                     p = parent_path / name
                     if p.suffix.lower() not in image_exts or p.is_symlink():

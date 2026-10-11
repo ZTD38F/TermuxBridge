@@ -50,11 +50,12 @@ def main():
                 total,done,ok,failed=snapshot()
                 if done>=total:
                     write_status({},'COMPLETE'); return 0
-                result=g.gallery_ocr_index({"max_images":16,"max_seconds":150,
-                                            "languages":LANG,"allow_on_battery":True})
+                result=g.gallery_ocr_index({"max_images":128,"max_seconds":3600,
+                                            "languages":LANG,"allow_on_battery":True,
+                                            "unrestricted":True})
                 write_status(result,'RUNNING' if result.get('ok') else 'PAUSED')
                 if not result.get('ok') or result.get('paused'):
-                    time.sleep(60)
+                    time.sleep(2)
                     continue
                 if not result.get('recognized_ids') and not result.get('errors'):
                     g.gallery_scan({})
@@ -63,7 +64,7 @@ def main():
                         write_status({},'COMPLETE'); return 0
                     time.sleep(5)
                 else:
-                    time.sleep(0.2)
+                    time.sleep(0.01)
         finally:
             try:
                 if PID.exists() and PID.read_text().strip()==str(os.getpid()):

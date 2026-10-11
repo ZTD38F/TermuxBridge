@@ -54,13 +54,23 @@ class GalleryTests(unittest.TestCase):
     def test_scan_and_rescan_stable_ids(self):
         first = self.m.gallery_scan({})
         self.assertTrue(first["ok"], first)
-        self.assertEqual(first["indexed"], 3)
+        self.assertEqual(first["indexed"], 4)
         self.assertFalse(first["photos_modified"])
         items = self.m.gallery_list({"limit": 20})["items"]
         initial = {x["path"]:x["id"] for x in items}
         second = self.m.gallery_scan({})
         self.assertEqual(second["removed_missing"],0)
         self.assertEqual({x["path"]:x["id"] for x in self.m.gallery_list({"limit":20})["items"]},initial)
+
+    def test_full_access_indexes_hidden_readable_dirs_but_skips_android_private_tree(self):
+        android_data = self.shared / "Android" / "data" / "example"
+        android_data.mkdir(parents=True)
+        shutil.copy2(self.first, android_data / "private.jpg")
+        result = self.m.gallery_scan({})
+        self.assertTrue(result["ok"], result)
+        paths = {x["path"] for x in self.m.gallery_list({"limit":100})["items"]}
+        self.assertIn(".hidden/hidden.jpg", paths)
+        self.assertNotIn("Android/data/example/private.jpg", paths)
 
     def test_metadata_has_source_dimensions_and_no_gps(self):
         self.m.gallery_scan({})
@@ -82,7 +92,7 @@ class GalleryTests(unittest.TestCase):
         res = self.m.gallery_find_duplicates({"max_files": 100, "max_megabytes":10})
         self.assertTrue(res["complete"],res)
         self.assertEqual(len(res["groups"]),1)
-        self.assertEqual(len(res["groups"][0]["ids"]),2)
+        self.assertEqual(len(res["groups"][0]["ids"]),3)
         similar = self.m.gallery_similar({"ids":res["groups"][0]["ids"]})
         self.assertEqual(similar["pairs"][0]["distance"],0)
 
@@ -91,7 +101,7 @@ class GalleryTests(unittest.TestCase):
         self.shared.rename(self.shared.with_name("storage_offline"))
         failed = self.m.gallery_scan({})
         self.assertFalse(failed["ok"])
-        self.assertEqual(self.m.gallery_status({})["indexed"],3)
+        self.assertEqual(self.m.gallery_status({})["indexed"],4)
 
     def test_stale_file_rejected_then_reconciled(self):
         self.m.gallery_scan({})
@@ -111,7 +121,7 @@ class GalleryTests(unittest.TestCase):
             (self.camera / ("extra-%03d.jpg" % i)).unlink()
         result = self.m.gallery_scan({})
         self.assertFalse(result["ok"], result)
-        self.assertEqual(self.m.gallery_status({})["indexed"],123)
+        self.assertEqual(self.m.gallery_status({})["indexed"],124)
 
     def test_no_original_mutations(self):
         originals = [(p, p.read_bytes(), p.stat().st_mtime_ns)
@@ -130,7 +140,7 @@ class GalleryTests(unittest.TestCase):
         self.assertEqual(s["db_integrity"],"ok")
         self.assertFalse(s["semantic_embeddings"])
         self.assertFalse(s["ocr_available"])
-        self.assertEqual(s["indexed"],3)
+        self.assertEqual(s["indexed"],4)
 
 if __name__ == "__main__":
     unittest.main()
