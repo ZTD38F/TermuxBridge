@@ -205,31 +205,21 @@ See `SECURITY.md` and `.gitignore`.
 The canonical runtime snapshot has been imported from the working phone without secrets or generated state. GitHub is now the source of truth for the managed TermuxBridge runtime. The current phone deployment should follow the verified `stable` branch through the transactional updater.
 
 
-## Local photo gallery
+## External addons
 
-TermuxBridge can expose the Android shared-storage photo library to ChatGPT as
-read-only MCP image tools. Source photos are never modified. A private SQLite
-metadata index is stored under `~/.termux-mcp-bridge/gallery.sqlite3`.
+TermuxBridge supports independently versioned local addons under
+`~/.termux-mcp-bridge/addons/<name>/current`. Addons declare an ABI, namespace,
+entrypoint and optional local service in `addon.json`. Their MCP tools are
+discovered at bridge startup without adding domain-specific logic to the core.
 
-Gallery tools:
+The loader validates addon ownership, path containment, ABI/bridge compatibility,
+namespace isolation and writable permission bits. Addon failures are isolated from
+the core bridge. Addons may also register virtual URI schemes that existing core
+file-reading workflows can route generically.
 
-- `gallery_scan` — refresh the local metadata index.
-- `gallery_status` — report indexed image/album counts.
-- `gallery_albums` / `gallery_list` — browse and filter indexed photos.
-- `gallery_thumbnail` — return one bounded preview as MCP image content.
-- `gallery_get_image` — return one higher-quality bounded preview.
-- `gallery_get_images` — return up to 12 selected photos in one call.
-- `gallery_contact_sheet` — render up to 64 labeled thumbnails for efficient visual scanning.
-
-The image-rendering tools use Pillow when available in the Termux Python
-environment. Metadata indexing remains isolated from the original photos.
-
-For MCP clients that cached the older tool list, the existing `read_text` tool
-also accepts read-only virtual paths such as `gallery://image/123` and
-`gallery://contact-sheet?limit=36&offset=0`. This keeps image access usable
-without requiring an immediate connector/tool-schema refresh.
-Cloud-only Google Photos items that are not present in Android shared storage
-are outside this local gallery source.
+`addon_status` reports installed addons and their isolated runtime state. The
+bridge lifecycle starts and stops addon services generically; domain-specific
+state, workers, permissions and dashboards remain owned by each addon repository.
 
 
 ## Self-maintenance and troubleshooting (v1.2.14)
@@ -316,9 +306,10 @@ may need to refresh their MCP tool discovery to display new queue tools.
 
 ### Built-in adapters and compatibility
 
-The phone, gallery and Google adapters are independently imported through the
-fixed allowlist in `runtime/adapter_runtime.py`. A broken or absent optional
-adapter no longer aborts the core bridge. Each adapter declares an API version
+The phone and Google built-in adapters are independently imported through the
+fixed allowlist in `runtime/adapter_runtime.py`. Other domains use the external
+addon ABI. A broken or absent optional adapter no longer aborts the core bridge.
+Each built-in adapter declares an API version
 and ABI; unsupported major versions, mismatching ABI, collisions and tools
 outside their registered namespace are rejected. Three unexpected execution
 errors isolate that adapter for 60 seconds; successful operations reset the
@@ -354,7 +345,7 @@ termuxbridgectl backup-restore BACKUP_FILENAME --yes # explicit restore
 
 Allowed data: non-secret local energy, notification and adapter settings,
 plus a consistent SQLite *snapshot* of the queued tasks.
-Secret/token files, raw logs, mobile gallery, app accounts and phone file
+Secret/token files, raw logs, external-addon datasets, app accounts and phone file
 contents are excluded. Backups are local (0700 directory, 0600 files), bounded
 in size and count (last five retained) and HMAC-SHA256 protected by a derived
 key from this installation's router token. **HMAC gives integrity, not

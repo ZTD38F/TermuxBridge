@@ -50,13 +50,13 @@ class EcosystemTests(unittest.TestCase):
         class Fake: pass
         def bad(_):raise RuntimeError("sensitive error text that must not be published")
         reg.register("google",Fake(),{"google_test":({"type":"object"},bad)})
-        reg.register("gallery",Fake(),{"gallery_test":({"type":"object"},lambda _:{"ok":True})})
+        reg.register("phone",Fake(),{"phone_test":({"type":"object"},lambda _:{"ok":True})})
         for _ in range(3):
             with self.assertRaisesRegex(RuntimeError,"adapter operation failed|temporarily isolated"):
                 reg.invoke("google","google_test",{})
         self.assertTrue(reg.status()["google"]["isolated"])
-        self.assertEqual(reg.invoke("gallery","gallery_test",{}),{"ok":True})
-        self.assertEqual(reg.status()["gallery"]["status"],"READY")
+        self.assertEqual(reg.invoke("phone","phone_test",{}),{"ok":True})
+        self.assertEqual(reg.status()["phone"]["status"],"READY")
 
     def test_adapter_loader_import_failure_isolated(self):
         mod=self.root/"broken.py"
@@ -64,13 +64,13 @@ class EcosystemTests(unittest.TestCase):
         reg=ad.AdapterRegistry()
         self.assertIsNone(reg.load("google",mod))
         self.assertEqual(reg.status()["google"]["status"],"FAILED_LOAD")
-        self.assertEqual(reg.status()["gallery"]["status"],"NOT_INSTALLED")
+        self.assertEqual(reg.status()["phone"]["status"],"NOT_INSTALLED")
         self.assertNotIn("SECRET",json.dumps(reg.status()))
 
     def test_adapter_tool_namespace_validation(self):
         reg=ad.AdapterRegistry()
         with self.assertRaises(ValueError):
-            reg.register("gallery",object(),{"google_steal":({"type":"object"},lambda a:a)})
+            reg.register("google",object(),{"phone_steal":({"type":"object"},lambda a:a)})
         with self.assertRaises(ValueError):
             reg.register("phone",object(),{"bad.name":({"type":"object"},lambda a:a)})
         reg.register("phone",object(),{"get_device_state":({"type":"object"},lambda _:True)})

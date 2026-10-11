@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.31"
+BRIDGE_VERSION = "1.2.32"
 
 import hashlib
 import hmac
@@ -191,142 +191,6 @@ for _record in EXTERNAL_ADDONS.discover():
 EXTERNAL_TOOL_NAMES = {item["name"] for item in EXTERNAL_TOOL_RECORDS}
 TOOLS.append({"name":"addon_status","title":"Installed addons","description":"List locally installed TermuxBridge addons and their isolated runtime status.","inputSchema":schema(),"annotations":{"readOnlyHint":True,"destructiveHint":False,"openWorldHint":False}})
 
-GALLERY_SERVER = Path(__file__).resolve().with_name("gallery_bridge_tools.py")
-GALLERY_MODULE = None if "gallery_" in EXTERNAL_ADDONS.namespaces() else ADAPTERS.load("gallery", GALLERY_SERVER)
-GALLERY_TOOLS = GALLERY_MODULE.TOOLS if GALLERY_MODULE is not None else {}
-for _name, (_input_schema, _handler) in GALLERY_TOOLS.items():
-    TOOLS.append({
-        "name": _name,
-        "title": _name.replace("_"," ").title(),
-        "description": GALLERY_MODULE.DESCRIPTIONS[_name],
-        "inputSchema": _input_schema,
-        "annotations": {
-            "readOnlyHint": _name in GALLERY_MODULE.READ_ONLY,
-            "destructiveHint": False,
-            "openWorldHint": False,
-        },
-    })
-
-def gallery_virtual_read(path: str, max_chars: int = 100000):
-    """Backward-compatible image access through the long-lived read_text tool.
-
-    Existing ChatGPT sessions can keep using the already-discovered read_text
-    tool even when the MCP client has not refreshed the newly added gallery_*
-    tool list yet.
-    """
-    if EXTERNAL_ADDONS.can_virtual(path):
-        return EXTERNAL_ADDONS.virtual_read(path, max_chars)
-    if GALLERY_MODULE is None:
-        raise ValueError("Gallery bridge is unavailable")
-    from urllib.parse import parse_qs, urlparse
-
-    parsed = urlparse(path)
-    if parsed.scheme != "gallery":
-        raise ValueError("Not a gallery virtual path")
-    route = (parsed.netloc + parsed.path).strip("/")
-    query = parse_qs(parsed.query, keep_blank_values=False)
-
-    def one(name, default=None):
-        values = query.get(name)
-        return values[-1] if values else default
-
-    if route.startswith("image/"):
-        image_id = int(route.split("/", 1)[1])
-        edge = int(one("max_edge", "3072"))
-        quality = int(one("quality", "90"))
-        return GALLERY_MODULE.gallery_get_image({"id": image_id, "max_edge": edge, "quality": quality})
-
-    if route.startswith("thumbnail/"):
-        image_id = int(route.split("/", 1)[1])
-        edge = int(one("max_edge", "768"))
-        return GALLERY_MODULE.gallery_thumbnail({"id": image_id, "max_edge": edge})
-
-    if route in {"contact-sheet", "contact_sheet"}:
-        args = {
-            "limit": int(one("limit", "36")),
-            "offset": int(one("offset", "0")),
-            "columns": int(one("columns", "6")),
-            "sort": one("sort", "newest"),
-        }
-        for key in ("query", "album", "date_from", "date_to"):
-            value = one(key)
-            if value not in (None, ""):
-                args[key] = value
-        return GALLERY_MODULE.gallery_contact_sheet(args)
-
-    if route == "status":
-        return GALLERY_MODULE.gallery_status({})
-
-    if route == "albums":
-        args = {"limit": int(one("limit", "100"))}
-        value = one("query")
-        if value:
-            args["query"] = value
-        return GALLERY_MODULE.gallery_albums(args)
-
-    if route == "list":
-        args = {
-            "limit": int(one("limit", "50")),
-            "offset": int(one("offset", "0")),
-            "sort": one("sort", "newest"),
-        }
-        for key in ("query", "album", "date_from", "date_to"):
-            value = one(key)
-            if value not in (None, ""):
-                args[key] = value
-        return GALLERY_MODULE.gallery_list(args)
-
-    # Sonoryx Photo Intelligence routes, available via the existing read_text tool.
-    if route in {"health", "search", "duplicates"} or route.startswith("metadata/") or route == "similar":
-        if route == "health":
-            return GALLERY_MODULE.gallery_status({})
-        if route == "search":
-            args = {"limit": int(one("limit", "50")), "offset": int(one("offset", "0")),
-                    "sort": one("sort", "newest")}
-            for key in ("query", "album", "date_from", "date_to"):
-                val = one(key)
-                if val:
-                    args[key] = val
-            return GALLERY_MODULE.gallery_search(args)
-        if route == "duplicates":
-            return GALLERY_MODULE.gallery_find_duplicates({
-                "max_files": int(one("max_files", "200")),
-                "max_megabytes": int(one("max_megabytes", "128"))})
-        if route == "similar":
-            ids = [int(x) for x in (one("ids", "").split(",")) if x.strip()]
-            return GALLERY_MODULE.gallery_similar({
-                "ids": ids, "threshold": int(one("threshold", "8"))})
-        return GALLERY_MODULE.gallery_metadata({"id": int(route.split("/", 1)[1])})
-
-    # Sonoryx private OCR: accessible through the already-approved read_text MCP tool.
-    if route == "ocr/status":
-        return GALLERY_MODULE.gallery_ocr_status({})
-    if route == "ocr/search":
-        value = one("query", "")
-        return GALLERY_MODULE.gallery_ocr_search({
-            "query": value, "album": one("album", ""),
-            "limit": int(one("limit", "30")), "offset": int(one("offset", "0"))})
-    if route.startswith("ocr/text/"):
-        return GALLERY_MODULE.gallery_ocr_text({
-            "id": int(route.split("/", 2)[2]), "max_chars": int(one("max_chars", "8000"))})
-    if route == "ocr/index":
-        ids_text = one("ids", "")
-        args = {"max_images": int(one("max_images", "2")),
-                "max_seconds": int(one("max_seconds", "24")),
-                "languages": one("languages", "rus+lav+eng")}
-        if ids_text:
-            args["ids"] = [int(x) for x in ids_text.split(",") if x.strip()]
-        if one("album"):
-            args["album"] = one("album")
-        return GALLERY_MODULE.gallery_ocr_index(args)
-
-    raise ValueError(
-        "Unknown gallery virtual path; use gallery://image/ID, "
-        "gallery://thumbnail/ID, gallery://contact-sheet, gallery://status, "
-        "gallery://albums, or gallery://list"
-    )
-
-
 def checked_argv(argv):
     """Open command mode: validate transport shape only, not executable policy.
 
@@ -397,7 +261,7 @@ def bridge_diagnostics():
                 extra += 1
         except (OSError, ValueError): pass
     output["unmanaged_tunnel_instances"] = extra
-    output["optional_integrations"] = {"phone": PHONE_MODULE is not None, "google": GOOGLE_MODULE is not None, "gallery": GALLERY_MODULE is not None}
+    output["optional_integrations"] = {"phone": PHONE_MODULE is not None, "google": GOOGLE_MODULE is not None}
     return output
 
 
@@ -470,8 +334,6 @@ def call(name, a):
     if name in {"read_text", "read_text_chunk"}:
         if isinstance(a.get("path"), str) and EXTERNAL_ADDONS.can_virtual(a["path"]):
             return EXTERNAL_ADDONS.virtual_read(a["path"], a.get("max_chars", 100000))
-        if isinstance(a.get("path"), str) and a["path"].startswith("gallery://"):
-            return gallery_virtual_read(a["path"], a.get("max_chars", 100000))
         p = inside(a["path"]); n = a.get("max_chars", 100000)
         offset = a.get("offset", 0); size = p.stat().st_size
         with p.open("rb") as file:
@@ -551,10 +413,6 @@ def call(name, a):
         except (ValueError, PermissionError, TypeError):
             PHONE_MODULE._audit(phone_name, False, "validation or approval failed")
             raise
-    if name.startswith("gallery_"):
-        if GALLERY_MODULE is None or name not in GALLERY_TOOLS:
-            raise ValueError(f"Unknown gallery tool: {name}")
-        return ADAPTERS.invoke("gallery",name,a)
     if name.startswith("google_"):
         if GOOGLE_MODULE is None or name not in GOOGLE_TOOLS:
             raise ValueError(f"Unknown Google tool: {name}")

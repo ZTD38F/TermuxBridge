@@ -364,12 +364,12 @@ def chaos_selftest():
         def healthy(_):
             return {"ok":True}
         reg.register("google",Fake(),{"google_fake":({"type":"object"},unstable)})
-        reg.register("gallery",Fake(),{"gallery_fake":({"type":"object"},healthy)})
+        reg.register("phone",Fake(),{"phone_fake":({"type":"object"},healthy)})
         for _ in range(3):
             try:reg.invoke("google","google_fake",{})
             except RuntimeError:pass
         adapter_isolated=reg.status()["google"]["isolated"]
-        healthy_works=reg.invoke("gallery","gallery_fake",{})["ok"]
+        healthy_works=reg.invoke("phone","phone_fake",{})["ok"]
         archive=backup_create(root)["name"]
         verified=backup_verify(root,archive)["verified"]
         with zipfile.ZipFile(backups_dir(root)/archive,"a") as z:
