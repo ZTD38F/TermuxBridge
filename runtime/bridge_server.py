@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.30"
+BRIDGE_VERSION = "1.2.31"
 
 import hashlib
 import hmac
@@ -174,8 +174,25 @@ for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
         },
     })
 
+try:
+    from .external_addons import ExternalAddonRegistry
+except ImportError:
+    from external_addons import ExternalAddonRegistry
+
+EXTERNAL_ADDONS = ExternalAddonRegistry()
+_existing_tool_names = {item["name"] for item in TOOLS}
+EXTERNAL_TOOL_RECORDS = []
+for _record in EXTERNAL_ADDONS.discover():
+    if _record["name"] in _existing_tool_names:
+        continue
+    TOOLS.append(_record)
+    EXTERNAL_TOOL_RECORDS.append(_record)
+    _existing_tool_names.add(_record["name"])
+EXTERNAL_TOOL_NAMES = {item["name"] for item in EXTERNAL_TOOL_RECORDS}
+TOOLS.append({"name":"addon_status","title":"Installed addons","description":"List locally installed TermuxBridge addons and their isolated runtime status.","inputSchema":schema(),"annotations":{"readOnlyHint":True,"destructiveHint":False,"openWorldHint":False}})
+
 GALLERY_SERVER = Path(__file__).resolve().with_name("gallery_bridge_tools.py")
-GALLERY_MODULE = ADAPTERS.load("gallery", GALLERY_SERVER)
+GALLERY_MODULE = None if "gallery_" in EXTERNAL_ADDONS.namespaces() else ADAPTERS.load("gallery", GALLERY_SERVER)
 GALLERY_TOOLS = GALLERY_MODULE.TOOLS if GALLERY_MODULE is not None else {}
 for _name, (_input_schema, _handler) in GALLERY_TOOLS.items():
     TOOLS.append({
@@ -197,6 +214,8 @@ def gallery_virtual_read(path: str, max_chars: int = 100000):
     tool even when the MCP client has not refreshed the newly added gallery_*
     tool list yet.
     """
+    if EXTERNAL_ADDONS.can_virtual(path):
+        return EXTERNAL_ADDONS.virtual_read(path, max_chars)
     if GALLERY_MODULE is None:
         raise ValueError("Gallery bridge is unavailable")
     from urllib.parse import parse_qs, urlparse
@@ -449,6 +468,8 @@ def call(name, a):
         p = inside(a.get("path", ".")); limit = a.get("limit", 100); offset = a.get("offset", 0)
         return [{"name": x.name, "type": "dir" if x.is_dir() else "file", "size": x.stat().st_size if x.is_file() else None} for x in itertools.islice(sorted(p.iterdir()), offset, offset + limit)]
     if name in {"read_text", "read_text_chunk"}:
+        if isinstance(a.get("path"), str) and EXTERNAL_ADDONS.can_virtual(a["path"]):
+            return EXTERNAL_ADDONS.virtual_read(a["path"], a.get("max_chars", 100000))
         if isinstance(a.get("path"), str) and a["path"].startswith("gallery://"):
             return gallery_virtual_read(a["path"], a.get("max_chars", 100000))
         p = inside(a["path"]); n = a.get("max_chars", 100000)
@@ -512,6 +533,10 @@ def call(name, a):
         if not script.is_file(): raise ValueError(f"Migrator not found: {script}")
         argv = ["python", str(script), a["action"]]
         return start(argv, str(d)) if a.get("background", True) else run(argv, str(d), 120)
+    if name == "addon_status":
+        return {"ok": True, "addons": EXTERNAL_ADDONS.status()}
+    if name in EXTERNAL_TOOL_NAMES:
+        return EXTERNAL_ADDONS.invoke(name, a)
     if name.startswith("phone_"):
         phone_name = _phone_source_name(name)
         if PHONE_MODULE is None or phone_name not in PHONE_TOOLS:
