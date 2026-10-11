@@ -83,3 +83,15 @@ The runner checkpoints progress between large internal batches and continues to
 directories under shared storage. Android/data, Android/obb, /data/data and other
 OS-protected locations remain inaccessible unless Android itself grants access/root.
 Android/kernel hardware protections are not modified.
+
+
+## Shizuku Android/data source (v1.2.29)
+When official Shizuku/rish is available, Photo Intelligence indexes readable
+/storage/emulated/0/Android/data images as shizuku:// sources. The catalog
+stores only metadata; source bytes are read on demand through a short-lived hidden
+exchange file under shared storage and removed immediately after preview/OCR/hash.
+The source file itself is never modified. This avoids a permanent mirror of
+Android/data while enabling preview, metadata, hashing and OCR through the same
+gallery IDs. If Shizuku becomes temporarily unavailable, old Shizuku records are
+preserved rather than pruned.
+/data/data remains outside shell/Shizuku permissions on non-root Android.

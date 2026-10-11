@@ -32,6 +32,7 @@ RUNTIME_FILES=(
   gallery_bridge_tools.py
   gallery_intelligence.py
   gallery_ocr.py
+  gallery_shizuku.py
   gallery_maintenance.py
   google_bridge_tools.py
   local_https_proxy.py

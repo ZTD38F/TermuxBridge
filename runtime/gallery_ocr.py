@@ -105,17 +105,9 @@ def install(g: dict[str, Any]) -> None:
             raise ValueError("unknown gallery image id")
         return row
 
-    def _path(row: sqlite3.Row) -> Path:
-        value = (root / row["path"])
-        if value.is_symlink():
-            raise ValueError("symbolic link is forbidden")
-        p = value.resolve()
-        if not p.is_relative_to(root) or not p.is_file():
-            raise ValueError("photo unavailable")
-        st = p.stat()
-        if st.st_size != row["size"] or abs(st.st_mtime-row["mtime"]) > 0.00001:
-            raise ValueError("photo changed; rescan gallery")
-        return p
+    def _validate(row: sqlite3.Row) -> None:
+        g["_validate_row"](row)
+
 
     def _recognize(path: Path, languages: str, timeout: float) -> str:
         if not g["PIL_AVAILABLE"]:
@@ -219,10 +211,11 @@ def install(g: dict[str, Any]) -> None:
                     skipped.append(row["id"])
                     continue
                 try:
-                    original = _path(row)
-                    text = _recognize(original, languages, min(20.0, max(2.0, seconds-(time.monotonic()-start))))
+                    _validate(row)
+                    with g["_materialize_row"](row) as original:
+                        text = _recognize(original, languages, min(20.0, max(2.0, seconds-(time.monotonic()-start))))
                     # Check source didn't change while we were reading it.
-                    _path(row)
+                    _validate(row)
                     with db() as c:
                         _ensure(c)
                         c.execute("DELETE FROM gallery_ocr_fts WHERE rowid=?", (row["id"],))
@@ -240,7 +233,7 @@ def install(g: dict[str, Any]) -> None:
                     # Source might vanish mid-processing; if unchanged, mark failure
                     # so one unreadable photo cannot stall every future batch.
                     try:
-                        _path(row)
+                        _validate(row)
                         with db() as c:
                             _ensure(c)
                             c.execute("DELETE FROM gallery_ocr_fts WHERE rowid=?", (row["id"],))

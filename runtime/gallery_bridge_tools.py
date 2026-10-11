@@ -7,6 +7,7 @@ metadata index under ~/.termux-mcp-bridge/.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import io
 import json
 import math
@@ -16,6 +17,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import gallery_shizuku
 
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
@@ -317,15 +320,40 @@ def gallery_albums(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_row(row: sqlite3.Row) -> None:
+    value = str(row["path"])
+    if gallery_shizuku.is_virtual(value):
+        gallery_shizuku.validate(value, int(row["size"]), float(row["mtime"]))
+        return
+    path = (SHARED_ROOT / value)
+    if path.is_symlink():
+        raise ValueError("symbolic links are not permitted")
+    real = path.resolve()
+    if not real.is_file() or not real.is_relative_to(SHARED_ROOT):
+        raise ValueError("indexed image is no longer available; run gallery_scan")
+    st = real.stat()
+    if st.st_size != int(row["size"]) or abs(st.st_mtime-float(row["mtime"])) > 0.00001:
+        raise ValueError("indexed image changed; run gallery_scan")
+
+
+@contextmanager
+def _materialize_row(row: sqlite3.Row):
+    value = str(row["path"])
+    if gallery_shizuku.is_virtual(value):
+        with gallery_shizuku.materialize(value, int(row["size"]), float(row["mtime"]), STATE_DIR) as path:
+            yield path
+        return
+    _validate_row(row)
+    yield (SHARED_ROOT / value).resolve()
+
+
 def _row_by_id(image_id: int) -> sqlite3.Row:
     _ensure_index()
     with _db() as conn:
         row = conn.execute("SELECT * FROM images WHERE id=?", (image_id,)).fetchone()
     if row is None:
         raise ValueError(f"unknown gallery image id: {image_id}")
-    path = (SHARED_ROOT / row["path"]).resolve()
-    if not path.is_file() or SHARED_ROOT not in path.parents:
-        raise ValueError("indexed image is no longer available; run gallery_scan")
+    _validate_row(row)
     return row
 
 
@@ -366,8 +394,8 @@ def _update_dimensions(image_id: int, width: int, height: int) -> None:
 
 
 def _image_result(row: sqlite3.Row, *, max_edge: int, quality: int) -> dict[str, Any]:
-    path = (SHARED_ROOT / row["path"]).resolve()
-    data, width, height = _render_jpeg(path, max_edge, quality)
+    with _materialize_row(row) as path:
+        data, width, height = _render_jpeg(path, max_edge, quality)
     _update_dimensions(int(row["id"]), width, height)
     metadata = _item(row)
     metadata.update({"rendered_width": width, "rendered_height": height, "rendered_mime": "image/jpeg"})
@@ -402,8 +430,8 @@ def gallery_get_images(arguments: dict[str, Any]) -> dict[str, Any]:
     metadata = []
     for raw_id in ids:
         row = _row_by_id(int(raw_id))
-        path = (SHARED_ROOT / row["path"]).resolve()
-        data, width, height = _render_jpeg(path, max_edge, quality)
+        with _materialize_row(row) as path:
+            data, width, height = _render_jpeg(path, max_edge, quality)
         _update_dimensions(int(row["id"]), width, height)
         content.append({"type": "image", "data": base64.b64encode(data).decode("ascii"), "mimeType": "image/jpeg"})
         metadata.append({**_item(row), "rendered_width": width, "rendered_height": height})
@@ -431,15 +459,15 @@ def gallery_contact_sheet(arguments: dict[str, Any]) -> dict[str, Any]:
     for index, row in enumerate(rows):
         x0 = (index % cols) * cell_w
         y0 = (index // cols) * (image_h + label_h)
-        path = (SHARED_ROOT / row["path"]).resolve()
         try:
-            with Image.open(path) as source:
-                source.seek(0)
-                thumb = ImageOps.exif_transpose(source).convert("RGB")
-                thumb.thumbnail((cell_w, image_h), Image.Resampling.LANCZOS)
-                px = x0 + (cell_w - thumb.width) // 2
-                py = y0 + (image_h - thumb.height) // 2
-                sheet.paste(thumb, (px, py))
+            with _materialize_row(row) as path:
+                with Image.open(path) as source:
+                    source.seek(0)
+                    thumb = ImageOps.exif_transpose(source).convert("RGB")
+                    thumb.thumbnail((cell_w, image_h), Image.Resampling.LANCZOS)
+                    px = x0 + (cell_w - thumb.width) // 2
+                    py = y0 + (image_h - thumb.height) // 2
+                    sheet.paste(thumb, (px, py))
         except Exception:
             draw.rectangle((x0, y0, x0 + cell_w - 1, y0 + image_h - 1), outline="black")
             draw.text((x0 + 8, y0 + 8), "unreadable", fill="black", font=font)

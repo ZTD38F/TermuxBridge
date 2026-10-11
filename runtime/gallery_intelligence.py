@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import gallery_shizuku
+
 VERSION = "2.0.0"
 
 
@@ -64,17 +66,11 @@ def install(g: dict[str, Any]) -> None:
                   "finished REAL NOT NULL, scanned INTEGER NOT NULL, removed INTEGER NOT NULL, "
                   "errors INTEGER NOT NULL, success INTEGER NOT NULL)")
 
-    def _safe_path(row: sqlite3.Row) -> Path:
-        path = root / row["path"]
-        if path.is_symlink():
-            raise ValueError("symbolic links are not permitted")
-        real = path.resolve()
-        if not real.is_relative_to(root) or not real.is_file():
-            raise ValueError("indexed file is unavailable or outside shared storage")
-        s = real.stat()
-        if s.st_size != row["size"] or abs(s.st_mtime - row["mtime"]) > 0.00001:
-            raise ValueError("file changed since index; run gallery_scan")
-        return real
+    @contextmanager
+    def _safe_path(row: sqlite3.Row):
+        with g["_materialize_row"](row) as path:
+            yield path
+
 
     def scan(_: dict[str, Any]) -> dict[str, Any]:
         """Atomic catalog scan. Never prune on inaccessible or suspiciously small input."""
@@ -106,7 +102,7 @@ def install(g: dict[str, Any]) -> None:
                     if child.is_symlink():
                         continue
                     rel_child = str(child.relative_to(root)).replace("\\", "/").lower()
-                    if rel_child in {"android/data", "android/obb"} or rel_child.startswith("android/data/") or rel_child.startswith("android/obb/"):
+                    if rel_child == "android/data" or rel_child.startswith("android/data/"):
                         continue
                     kept.append(d)
                 dirs[:] = kept
@@ -125,6 +121,20 @@ def install(g: dict[str, Any]) -> None:
                                            g["MIME_BY_EXT"].get(p.suffix.lower())))
                     except (OSError, ValueError) as exc:
                         err(exc)
+
+            shizuku_count = 0
+            if root == Path("/storage/emulated/0").resolve():
+                try:
+                    for absolute, size, mtime in gallery_shizuku.enumerate_images(image_exts):
+                        virtual = gallery_shizuku.to_virtual(absolute)
+                        relative = absolute[len("/storage/emulated/0/"):]
+                        p = Path(absolute)
+                        album = str(Path(relative).parent)
+                        candidates.append((virtual, p.name, album, int(size), float(mtime), stamp,
+                                           g["MIME_BY_EXT"].get(p.suffix.lower())))
+                        shizuku_count += 1
+                except Exception as exc:
+                    err(OSError(type(exc).__name__))
             with db() as c:
                 old = c.execute("SELECT COUNT(*) FROM images").fetchone()[0]
             if not candidates or (old >= 100 and len(candidates) < old * 0.6):
@@ -157,7 +167,8 @@ def install(g: dict[str, Any]) -> None:
             return {"ok": True, "indexed": total, "scanned": len(candidates),
                     "removed_missing": removed, "read_errors": len(errors),
                     "partial": bool(errors), "pruned": not errors,
-                    "seconds": round(time.time()-start,2), "photos_modified": False, "engine": VERSION}
+                    "seconds": round(time.time()-start,2), "photos_modified": False, "engine": VERSION,
+                    "shizuku_android_data_images": shizuku_count}
 
     def _row(photo_id: int) -> sqlite3.Row:
         with db() as c:
@@ -168,20 +179,21 @@ def install(g: dict[str, Any]) -> None:
 
     def metadata(args: dict[str, Any]) -> dict[str, Any]:
         row = _row(int(args["id"]))
-        path = _safe_path(row)
+        g["_validate_row"](row)
         result = dict(g["_item"](row))
         result.update({"ok": True, "pixel_width": None, "pixel_height": None,
                        "exif_date_taken": None, "gps_included": False})
         if g["PIL_AVAILABLE"]:
             try:
-                with g["Image"].open(path) as im:
-                    result["pixel_width"], result["pixel_height"] = im.size
-                    exif = im.getexif()
-                    for tag in (36867, 36868, 306):
-                        value = exif.get(tag)
-                        if isinstance(value, (str, bytes)):
-                            result["exif_date_taken"] = (value.decode(errors="replace") if isinstance(value, bytes) else value)[:40]
-                            break
+                with _safe_path(row) as path:
+                    with g["Image"].open(path) as im:
+                        result["pixel_width"], result["pixel_height"] = im.size
+                        exif = im.getexif()
+                        for tag in (36867, 36868, 306):
+                            value = exif.get(tag)
+                            if isinstance(value, (str, bytes)):
+                                result["exif_date_taken"] = (value.decode(errors="replace") if isinstance(value, bytes) else value)[:40]
+                                break
             except Exception as exc:
                 result["decode_error"] = type(exc).__name__
         # Never disclose GPS by default. GPS is not included in this tool.
@@ -211,10 +223,10 @@ def install(g: dict[str, Any]) -> None:
         for raw in ids:
             row = _row(int(raw))
             try:
-                path = _safe_path(row)
-                with g["Image"].open(path) as src:
-                    img = g["ImageOps"].exif_transpose(src).convert("L").resize((9, 8))
-                    pixels = list(img.get_flattened_data()) if hasattr(img, "get_flattened_data") else list(img.getdata())
+                with _safe_path(row) as path:
+                    with g["Image"].open(path) as src:
+                        img = g["ImageOps"].exif_transpose(src).convert("L").resize((9, 8))
+                        pixels = list(img.get_flattened_data()) if hasattr(img, "get_flattened_data") else list(img.getdata())
                 bits = 0
                 for y in range(8):
                     for x in range(8):
@@ -252,24 +264,24 @@ def install(g: dict[str, Any]) -> None:
             if tested >= max_files or consumed+row["size"] > max_bytes:
                 break
             try:
-                p = _safe_path(row)
-                with db() as c:
-                    _extras(c)
-                    cached = c.execute("SELECT sha256 FROM gallery_extra WHERE image_id=? "
-                                       "AND size=? AND mtime=?", (row["id"],row["size"],row["mtime"])).fetchone()
-                digest = cached["sha256"] if cached and cached["sha256"] else None
-                if digest is None:
-                    h = hashlib.sha256()
-                    with p.open("rb") as f:
-                        for block in iter(lambda: f.read(1024*1024), b""):
-                            h.update(block)
-                    digest = h.hexdigest()
+                with _safe_path(row) as p:
                     with db() as c:
                         _extras(c)
-                        c.execute("INSERT INTO gallery_extra(image_id,size,mtime,sha256) VALUES(?,?,?,?) "
-                                  "ON CONFLICT(image_id) DO UPDATE SET size=excluded.size, "
-                                  "mtime=excluded.mtime,sha256=excluded.sha256",
-                                  (row["id"],row["size"],row["mtime"],digest))
+                        cached = c.execute("SELECT sha256 FROM gallery_extra WHERE image_id=? "
+                                           "AND size=? AND mtime=?", (row["id"],row["size"],row["mtime"])).fetchone()
+                    digest = cached["sha256"] if cached and cached["sha256"] else None
+                    if digest is None:
+                        h = hashlib.sha256()
+                        with p.open("rb") as f:
+                            for block in iter(lambda: f.read(1024*1024), b""):
+                                h.update(block)
+                        digest = h.hexdigest()
+                        with db() as c:
+                            _extras(c)
+                            c.execute("INSERT INTO gallery_extra(image_id,size,mtime,sha256) VALUES(?,?,?,?) "
+                                      "ON CONFLICT(image_id) DO UPDATE SET size=excluded.size, "
+                                      "mtime=excluded.mtime,sha256=excluded.sha256",
+                                      (row["id"],row["size"],row["mtime"],digest))
                 groups[(row["size"],digest)].append(row["id"])
                 tested += 1
                 consumed += row["size"]
