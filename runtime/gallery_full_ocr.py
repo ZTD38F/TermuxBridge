@@ -53,9 +53,10 @@ def main():
                 result=g.gallery_ocr_index({"max_images":128,"max_seconds":3600,
                                             "languages":LANG,"allow_on_battery":True,
                                             "unrestricted":True})
-                write_status(result,'RUNNING' if result.get('ok') else 'PAUSED')
-                if not result.get('ok') or result.get('paused'):
-                    time.sleep(2)
+                paused = result.get('paused')
+                write_status(result,'PAUSED' if (not result.get('ok') or paused) else 'RUNNING')
+                if not result.get('ok') or paused:
+                    time.sleep(60 if paused == "SHIZUKU_UNAVAILABLE" else 2)
                     continue
                 if not result.get('recognized_ids') and not result.get('errors'):
                     g.gallery_scan({})
