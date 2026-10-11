@@ -124,6 +124,19 @@ fi
 
 CURRENT_GENERATION="$(cat "$BRIDGE_DIR/source_commit" 2>/dev/null || echo legacy)"
 CURRENT_PORT=18771
+ADDONS_ROOT="${TERMUX_BRIDGE_ADDONS_ROOT:-$HOME/.termux-mcp-bridge/addons}"
+
+external_namespace_claimed() {
+  local namespace="$1"
+  [[ -f "$CURRENT_DIR/addon_services.py" ]] || return 1
+  [[ "$(python "$CURRENT_DIR/addon_services.py" claims --root "$ADDONS_ROOT" --namespace "$namespace" 2>/dev/null || true)" == "yes" ]]
+}
+
+start_external_addons() {
+  [[ -f "$CURRENT_DIR/addon_services.py" ]] || return 0
+  mkdir -p "$BRIDGE_DIR/logs"
+  python "$CURRENT_DIR/addon_services.py" start --root "$ADDONS_ROOT" >"$BRIDGE_DIR/logs/addons-start.log" 2>&1 || true
+}
 if [[ -s "$ROUTE_FILE" ]]; then
   read -r CURRENT_GENERATION CURRENT_PORT < <(python - "$ROUTE_FILE" <<'PY'
 import json,sys
@@ -136,6 +149,7 @@ else
 fi
 
 start_full_gallery_ocr() {
+  external_namespace_claimed "gallery_" && return 0
   local state="$HOME/.termux-mcp-bridge"
   [[ -f "$CURRENT_DIR/gallery_full_ocr.py" && -f "$state/gallery_full_ocr.enabled" ]] || return 0
   if [[ -f "$state/gallery_full_ocr_status.json" ]] && grep -Fq '"state": "COMPLETE"' "$state/gallery_full_ocr_status.json"; then
@@ -150,6 +164,7 @@ start_full_gallery_ocr() {
 }
 
 start_gallery_worker() {
+  external_namespace_claimed "gallery_" && return 0
   # Persistent read-only photo maintenance, independent of Android JobScheduler.
   # All CPU-heavy tasks are protected by gallery_maintenance battery checks.
   [[ -f "$CURRENT_DIR/gallery_worker.py" ]] || return 0
@@ -192,6 +207,7 @@ start_tunnel_watchdog() {
 # A tunnel failure MUST NOT restart a healthy authenticated MCP stack.
 if pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
    proxy_healthy && backend_health "$CURRENT_PORT" && router_health; then
+  start_external_addons
   start_full_gallery_ocr
   start_gallery_worker
   start_tunnel_watchdog
@@ -257,6 +273,7 @@ if ! start_tunnel_watchdog; then
   exit 4
 fi
 trap - ERR INT TERM
+start_external_addons
 start_full_gallery_ocr
 start_gallery_worker
 echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."

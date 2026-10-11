@@ -45,6 +45,8 @@ RUNTIME_FILES=(
   rollback_guard.py
   autonomy_engine.py
   adapter_runtime.py
+  external_addons.py
+  addon_services.py
   ecosystem_core.py
   ecosystem_cli.py
 )
