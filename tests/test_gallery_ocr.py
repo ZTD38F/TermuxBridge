@@ -1,5 +1,6 @@
 """Tests for on-device OCR, index security and search. Author: Dāvids Krūmiņš."""
 from __future__ import annotations
+from contextlib import contextmanager
 import importlib.util
 from pathlib import Path
 import sqlite3
@@ -13,6 +14,7 @@ RUNTIME = Path(__file__).resolve().parents[1] / "runtime"
 sys.path.insert(0,str(RUNTIME))
 import gallery_intelligence
 import gallery_ocr
+import gallery_shizuku
 try:
     from PIL import Image,ImageDraw,ImageFont
 except ImportError:
@@ -140,6 +142,27 @@ class OcrTests(unittest.TestCase):
         self.assertTrue(result["ok"],result)
         self.assertEqual(result["recognized_ids"],[self.photo_id])
         self.assertIsNone(result["paused"])
+
+    def test_transient_shizuku_outage_pauses_without_permanent_failure(self):
+        @contextmanager
+        def unavailable(_row):
+            raise gallery_shizuku.ShizukuUnavailable("temporary")
+            yield
+        original = self.g._materialize_row
+        self.g._materialize_row = unavailable
+        try:
+            with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":80,"charging":False,"temperature_c":30.0}), \
+                 patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+                result=self.g.gallery_ocr_index({"max_images":1,"languages":"eng","unrestricted":True})
+        finally:
+            self.g._materialize_row = original
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["paused"],"SHIZUKU_UNAVAILABLE")
+        self.assertEqual(result["recognized_ids"],[])
+        self.assertEqual(result["errors"],[])
+        with self.g._db() as conn:
+            count=conn.execute("SELECT COUNT(*) FROM gallery_ocr_index WHERE image_id=?",(self.photo_id,)).fetchone()[0]
+        self.assertEqual(count,0)
 
     def test_low_battery_blocks_background_batch(self):
         with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":False}), \

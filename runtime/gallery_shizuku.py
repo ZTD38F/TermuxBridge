@@ -12,6 +12,10 @@ import os, secrets, shlex, subprocess, time
 from pathlib import Path
 from typing import Iterable
 
+class ShizukuUnavailable(RuntimeError):
+    """Transient Shizuku/rish outage; callers should preserve index and retry later."""
+
+
 PREFIX = "shizuku://"
 ANDROID_DATA = "/storage/emulated/0/Android/data"
 RISH = Path.home() / "bin" / "rish"
@@ -79,7 +83,7 @@ def _remote_output(command: str, *, timeout: float = 60, attempts: int = 3) -> b
                 pass
         if attempt + 1 < attempts:
             time.sleep(0.35)
-    raise RuntimeError("Shizuku exchange failed") from last
+    raise ShizukuUnavailable("Shizuku exchange failed") from last
 
 def available() -> bool:
     try:
@@ -153,6 +157,8 @@ def materialize(value: str, expected_size: int, expected_mtime: float, state_dir
                         pass
             if attempt == 0:
                 time.sleep(0.35)
+        if not available():
+            raise ShizukuUnavailable("Shizuku service unavailable") from last
         raise ValueError("Shizuku read failed") from last
     finally:
         if target is not None:

@@ -95,3 +95,10 @@ Android/data while enabling preview, metadata, hashing and OCR through the same
 gallery IDs. If Shizuku becomes temporarily unavailable, old Shizuku records are
 preserved rather than pruned.
 /data/data remains outside shell/Shizuku permissions on non-root Android.
+
+
+## Transient Shizuku outage handling (v1.2.30)
+If Shizuku/rish is temporarily unavailable, Android/data OCR is paused instead of
+recording thousands of false permanent OCR failures. Existing Shizuku catalog rows
+are preserved. The full runner reports PAUSED/SHIZUKU_UNAVAILABLE, waits one minute,
+and retries automatically. Once Shizuku is running again, processing resumes.

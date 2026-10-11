@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import gallery_shizuku
+
 OCR_VERSION = "2.1.0"
 RECOGNITION_LANGUAGES = ("rus", "lav", "eng")
 
@@ -228,6 +230,9 @@ def install(g: dict[str, Any]) -> None:
                           processed_at=excluded.processed_at,text_length=excluded.text_length,error=NULL
                         """, (row["id"],row["size"],row["mtime"],languages,time.time(),len(text)))
                     processed.append(row["id"])
+                except gallery_shizuku.ShizukuUnavailable:
+                    paused = "SHIZUKU_UNAVAILABLE"
+                    break
                 except (OSError,ValueError,RuntimeError,subprocess.TimeoutExpired) as exc:
                     failed.append({"id":row["id"],"error":type(exc).__name__})
                     # Source might vanish mid-processing; if unchanged, mark failure
@@ -244,7 +249,7 @@ def install(g: dict[str, Any]) -> None:
                                       size=excluded.size,mtime=excluded.mtime,languages=excluded.languages,
                                       processed_at=excluded.processed_at,text_length=0,error=excluded.error""",
                                       (row["id"],row["size"],row["mtime"],languages,time.time(),type(exc).__name__))
-                    except (OSError,ValueError):
+                    except (OSError,ValueError,gallery_shizuku.ShizukuUnavailable):
                         pass
             return {"ok":True,"recognized_ids":processed,"skipped_cached_ids":skipped,
                     "errors":failed,"paused":paused,"elapsed_seconds":round(time.monotonic()-start,2),
