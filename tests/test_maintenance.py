@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import shlex
+import shutil
 import tempfile
 import unittest
 import fcntl
@@ -29,8 +30,8 @@ class MaintenanceTests(unittest.TestCase):
         (self.root / "state/route.json").write_text(json.dumps({"generation": SHA, "port": 18771}))
         (self.root / "state/update.json").write_text(json.dumps({"phase": "COMMITTED", "current_generation": SHA}))
         (self.root / "state/tunnel_status.json").write_text(json.dumps({"state": "CLIENT_RUNNING"}))
-        self.script("start_bridge.sh", "#!/bin/bash\necho local-ok\n")
-        self.script("update_termux.sh", "#!/bin/bash\necho current-release-ok\n")
+        self.script("start_bridge.sh", "#!" + shutil.which("bash") + "\necho local-ok\n")
+        self.script("update_termux.sh", "#!" + shutil.which("bash") + "\necho current-release-ok\n")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -63,7 +64,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual((self.root / "state/maintenance.json").stat().st_mode & 0o777, 0o600)
 
     def test_update_failure_is_reported_and_will_retry(self):
-        self.script("update_termux.sh", "#!/bin/bash\nexit 19\n")
+        self.script("update_termux.sh", "#!" + shutil.which("bash") + "\nexit 19\n")
         failed = self.invoke()
         self.assertNotEqual(failed.returncode, 0)
         data = self.result()
@@ -146,9 +147,11 @@ class MaintenanceTests(unittest.TestCase):
         up = UPDATE.read_text()
         self.assertIn('--period-ms 3600000', ctl)
         self.assertIn('--persisted true', ctl)
-        self.assertIn('--script "$ROOT/maintain_bridge.sh"', ctl)
-        self.assertIn('maintain_bridge.sh boot_bridge.sh)', up)
+        self.assertIn('--script "$ROOT/scheduled_maintain_bridge.sh"', ctl)
+        self.assertIn('maintain_bridge.sh scheduled_maintain_bridge.sh boot_bridge.sh)', up)
         self.assertIn('cp -a "$source_root/runtime/maintain_bridge.sh"', up)
+        self.assertIn('cp -a "$source_root/runtime/scheduled_maintain_bridge.sh"', up)
+        self.assertNotIn('termux-job-scheduler --pending 2>/dev/null', ctl)
         self.assertIn('8>&- >>"$LOG" 2>&1', MAINTAIN.read_text())
 
 

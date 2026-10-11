@@ -45,7 +45,7 @@ RUNTIME_FILES=(
   ecosystem_core.py
   ecosystem_cli.py
 )
-MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh boot_bridge.sh)
+MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh scheduled_maintain_bridge.sh boot_bridge.sh)
 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
@@ -244,6 +244,9 @@ install_management_from_stage() {
   cp -a "$source_root/runtime/tunnel_watchdog.py" "$ROOT/tunnel_watchdog.py"
   # Atomically replace scripts that may currently be executing.
   # cp directly onto a running bash script can corrupt its remaining commands.
+  cp -a "$source_root/runtime/scheduled_maintain_bridge.sh" "$ROOT/scheduled_maintain_bridge.sh.next"
+  chmod 700 "$ROOT/scheduled_maintain_bridge.sh.next"
+  mv -f "$ROOT/scheduled_maintain_bridge.sh.next" "$ROOT/scheduled_maintain_bridge.sh"
   cp -a "$source_root/runtime/maintain_bridge.sh" "$ROOT/maintain_bridge.sh.next"
   chmod 700 "$ROOT/maintain_bridge.sh.next"
   mv -f "$ROOT/maintain_bridge.sh.next" "$ROOT/maintain_bridge.sh"
@@ -414,7 +417,7 @@ done
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
 
 python -m py_compile "$TMP/source/runtime/"*.py
-for file in start_bridge.sh status_bridge.sh stop_bridge.sh maintain_bridge.sh boot_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
+for file in start_bridge.sh status_bridge.sh stop_bridge.sh maintain_bridge.sh scheduled_maintain_bridge.sh boot_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
 bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl" "$TMP/source/runtime/gpt"
 journal VERIFIED_ARTIFACT
 

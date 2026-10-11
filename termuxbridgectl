@@ -3,6 +3,76 @@ set -Eeuo pipefail
 
 ROOT="${TERMUXBRIDGE_ROOT:-$HOME/termux-mcp-bridge}"
 JOB_ID=38038
+SCHEDULER_STATE="$ROOT/state/auto_update.json"
+
+SCHEDULED_RUN_STATE="$ROOT/state/scheduled_maintenance.json"
+
+record_scheduler_state() {
+  mkdir -p "$ROOT/state"
+  chmod 700 "$ROOT/state"
+  python - "$SCHEDULER_STATE" "$JOB_ID" "$1" <<'PY_STATE'
+import json, os, sys, tempfile, time, uuid
+path, job_id, enabled = sys.argv[1:]
+payload = {
+    "enabled": enabled == "true",
+    "job_id": int(job_id),
+    "period_ms": 3600000,
+    "request_id": uuid.uuid4().hex,
+    "requested_at": time.time(),
+    "registration": "SUBMITTED_UNVERIFIED" if enabled == "true" else "CANCEL_REQUESTED",
+}
+fd, tmp = tempfile.mkstemp(prefix=".auto-update.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, sort_keys=True)
+        fp.write("\n")
+        fp.flush()
+        os.fsync(fp.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+PY_STATE
+}
+
+scheduler_status() {
+  # Do NOT call termux-job-scheduler --pending. Termux:API 0.53.0
+  # may crash with NetworkRequest.toString() on a null NetworkRequest.
+  # A successful submission is not proof Android retained the job.
+  python - "$SCHEDULER_STATE" "$SCHEDULED_RUN_STATE" "$JOB_ID" <<'PY_STATUS'
+import json, sys
+request_path, run_path, job_id = sys.argv[1:]
+try:
+    with open(request_path, encoding="utf-8") as fp:
+        request = json.load(fp)
+except (OSError, ValueError, TypeError):
+    request = {}
+if request.get("job_id") != int(job_id) or request.get("enabled") is not True:
+    print("AUTO_UPDATE_STATUS DISABLED_OR_UNVERIFIED")
+    raise SystemExit(1)
+try:
+    with open(run_path, encoding="utf-8") as fp:
+        run = json.load(fp)
+except (OSError, ValueError, TypeError):
+    run = {}
+if (
+    request.get("request_id") and
+    run.get("request_id") == request["request_id"] and
+    run.get("job_id") == int(job_id) and
+    isinstance(run.get("finished_at"), (int, float)) and
+    run["finished_at"] >= request.get("requested_at", float("inf"))
+):
+    if run.get("exit_code") == 0:
+        print("AUTO_UPDATE_STATUS SCHEDULED_EXECUTION_VERIFIED")
+        print("AUTO_UPDATE_REGISTRATION CURRENTLY_PENDING_UNVERIFIED")
+        raise SystemExit(0)
+    print("AUTO_UPDATE_STATUS SCHEDULED_EXECUTION_FAILED")
+    raise SystemExit(1)
+print("AUTO_UPDATE_STATUS SUBMITTED_UNVERIFIED")
+raise SystemExit(1)
+PY_STATUS
+}
 
 case "${1:-check}" in
   check)
@@ -62,21 +132,31 @@ case "${1:-check}" in
     exec python "$ROOT/current/ecosystem_cli.py" chaos-test "$ROOT"
     ;;
   auto-update-enable)
-    [[ -x "$ROOT/maintain_bridge.sh" ]] || { echo "Maintenance script missing; update TermuxBridge first" >&2; exit 1; }
-    # Android JobScheduler is opportunistic, not an exact hourly timer.
-    termux-job-scheduler --script "$ROOT/maintain_bridge.sh" --job-id "$JOB_ID" --period-ms 3600000 --network any --battery-not-low false --storage-not-low true --persisted true >/dev/null
-    termux-job-scheduler --pending | grep -F "Job $JOB_ID:" | grep -F "$ROOT/maintain_bridge.sh" >/dev/null || {
-      echo "Failed to verify Android maintenance job" >&2
+    [[ -x "$ROOT/scheduled_maintain_bridge.sh" ]] || {
+      echo "Scheduled maintenance wrapper missing; update TermuxBridge first" >&2
       exit 1
     }
-    echo "TermuxBridge hourly self-maintenance scheduled (Android may defer runs)."
+    # Receipt first: an immediate dispatch can record the same request_id.
+    record_scheduler_state true
+    if termux-job-scheduler --script "$ROOT/scheduled_maintain_bridge.sh" --job-id "$JOB_ID" --period-ms 3600000 --network any --battery-not-low false --storage-not-low true --persisted true >/dev/null; then
+      echo "TermuxBridge hourly JobScheduler request submitted; execution not yet verified."
+      scheduler_status || true
+    else
+      echo "JobScheduler registration failed; current registration is unverified." >&2
+      exit 1
+    fi
     ;;
   auto-update-disable)
-    termux-job-scheduler --cancel --job-id "$JOB_ID" >/dev/null 2>&1 || true
-    echo "TermuxBridge automatic updates disabled."
+    if termux-job-scheduler --cancel --job-id "$JOB_ID" >/dev/null; then
+      record_scheduler_state false
+      echo "TermuxBridge JobScheduler cancellation requested."
+    else
+      echo "JobScheduler cancellation failed; cannot confirm disabled state." >&2
+      exit 1
+    fi
     ;;
   auto-update-status)
-    termux-job-scheduler --pending
+    scheduler_status
     ;;
   maintenance-now|auto-update-now)
     exec "$ROOT/maintain_bridge.sh"
@@ -93,7 +173,7 @@ PY
       echo "No scheduled maintenance run recorded yet."
     fi
     echo "== Android schedule =="
-    termux-job-scheduler --pending | grep -F "Job $JOB_ID:" || true
+    scheduler_status || true
     ;;
   *)
     echo "Usage: termuxbridgectl {check|status|update-status|update|update-now|restart|logs [N]|auto-update-enable|auto-update-disable|auto-update-status|maintenance-now|maintenance-status|dashboard|dashboard-html|backup-create|backup-list|backup-verify|backup-restore|chaos-test}" >&2
