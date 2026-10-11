@@ -133,6 +133,14 @@ class OcrTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["minimum_battery"],25)
 
+    def test_unrestricted_private_mode_ignores_application_power_and_thermal_gates(self):
+        with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":1,"charging":False,"temperature_c":55.0}), \
+             patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
+            result=self.g.gallery_ocr_index({"max_images":1,"languages":"eng","unrestricted":True})
+        self.assertTrue(result["ok"],result)
+        self.assertEqual(result["recognized_ids"],[self.photo_id])
+        self.assertIsNone(result["paused"])
+
     def test_low_battery_blocks_background_batch(self):
         with patch.object(gallery_ocr,"battery_status",return_value={"available":True,"level":17,"charging":False}), \
              patch.object(gallery_ocr,"ocr_languages",return_value=["eng"]):
