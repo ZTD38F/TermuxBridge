@@ -26,8 +26,29 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
 
+      - name: Validate legacy-updater release compatibility
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          bash build_release_bundle.sh "$tmp/bundle"
+          for legacy in gallery_bridge_tools.py gallery_intelligence.py gallery_ocr.py gallery_shizuku.py gallery_maintenance.py; do
+            test -f "$tmp/bundle/runtime/$legacy"
+            test -L "$tmp/bundle/runtime/$legacy"
+          done
+          mapfile -t regular < <(find "$tmp/bundle/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | sort)
+          test "${#regular[@]}" -ge 21
+          mkdir "$tmp/candidate"
+          for file in "${regular[@]}"; do cp -a "$tmp/bundle/runtime/$file" "$tmp/candidate/$file"; done
+          if find "$tmp/candidate" -maxdepth 1 -name 'gallery*' | grep -q .; then
+            echo "Legacy aliases leaked into installed candidate" >&2
+            exit 1
+          fi
+          python -m py_compile "$tmp/candidate"/*.py
+
       - name: Parse shell scripts
         run: |
+          bash -n build_release_bundle.sh
           bash -n runtime/gpt
           bash -n runtime/maintain_bridge.sh
           bash -n runtime/boot_bridge.sh
