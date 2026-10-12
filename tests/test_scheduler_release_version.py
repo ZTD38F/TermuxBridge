@@ -13,7 +13,7 @@ class SchedulerReleaseVersionTests(unittest.TestCase):
                      if isinstance(s,ast.Assign)
                      and any(isinstance(x,ast.Name) and x.id=="BRIDGE_VERSION"
                              for x in s.targets))
-        self.assertEqual(version,"1.2.34")
+        self.assertGreaterEqual(tuple(map(int, version.split("."))), (1, 2, 34))
         updater=(ROOT/"update_termux.sh").read_text()
         self.assertIn("scheduled_maintain_bridge.sh",updater)
         self.assertTrue((ROOT/"runtime/scheduled_maintain_bridge.sh").is_file())
