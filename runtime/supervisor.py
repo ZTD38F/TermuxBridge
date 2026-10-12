@@ -23,6 +23,7 @@ HOP_BY_HOP = {
 }
 
 _inflight: dict[str, int] = {}
+_inflight_by_backend: dict[str, int] = {}
 _guard = threading.Lock()
 
 
@@ -48,21 +49,31 @@ def _authorized(handler: BaseHTTPRequestHandler) -> bool:
     return hmac.compare_digest(expected, supplied)
 
 
-def _inflight_add(generation: str, delta: int) -> None:
+def backend_key(generation: str, port: int) -> str:
+    return f"{generation}:{port}"
+
+
+def _inflight_add(generation: str, port: int, delta: int) -> None:
+    """Track both compatibility generation totals and exact backend drains."""
     with _guard:
         _inflight[generation] = max(0, _inflight.get(generation, 0) + delta)
+        key = backend_key(generation, port)
+        _inflight_by_backend[key] = max(0, _inflight_by_backend.get(key, 0) + delta)
 
 
 def _snapshot() -> dict:
     route = _read_route()
     with _guard:
         counts = dict(_inflight)
+        exact = dict(_inflight_by_backend)
     return {
         "ok": True,
         "pid": os.getpid(),
         "active_generation": route["generation"],
         "active_port": route["port"],
         "inflight": counts,
+        "inflight_by_backend": exact,
+        "backend_key": backend_key(route["generation"], route["port"]),
         "timestamp": int(time.time()),
     }
 
@@ -151,7 +162,7 @@ class Handler(BaseHTTPRequestHandler):
         headers["Host"] = f"127.0.0.1:{port}"
         headers["X-Bridge-Backend-Token"] = backend_token
 
-        _inflight_add(generation, 1)
+        _inflight_add(generation, port, 1)
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
         try:
             conn.request(self.command, self.path, body=body, headers=headers)
@@ -183,7 +194,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass
         finally:
             conn.close()
-            _inflight_add(generation, -1)
+            _inflight_add(generation, port, -1)
 
 
 def main() -> None:

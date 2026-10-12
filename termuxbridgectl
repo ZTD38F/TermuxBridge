@@ -98,6 +98,12 @@ case "${1:-check}" in
     rm -f "$snapshot"
     exit "$rc"
     ;;
+  addon-reload)
+    exec python "$ROOT/current/addon_reload.py"
+    ;;
+  addon-reload-status)
+    exec python "$ROOT/current/addon_reload.py" --status
+    ;;
   restart)
     "$ROOT/stop_bridge.sh"
     exec "$ROOT/start_bridge.sh"
