@@ -75,7 +75,7 @@ class AddonReloadTests(unittest.TestCase):
         cli=(root/"termuxbridgectl").read_text()
         self.assertIn("addon-reload)",cli)
         self.assertIn("addon-reload-status)",cli)
-        self.assertIn('BRIDGE_VERSION = "1.2.35"',(root/"runtime/bridge_server.py").read_text())
+        self.assertIn('BRIDGE_VERSION = "1.2.36"',(root/"runtime/bridge_server.py").read_text())
 
     def test_old_generation_inflight_compat(self):
         import supervisor
