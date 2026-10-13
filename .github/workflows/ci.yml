@@ -32,18 +32,24 @@ jobs:
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           bash build_release_bundle.sh "$tmp/bundle"
-          for legacy in gallery_bridge_tools.py gallery_intelligence.py gallery_ocr.py gallery_shizuku.py gallery_maintenance.py; do
+          for legacy in gallery_bridge_tools.py gallery_intelligence.py gallery_ocr.py gallery_shizuku.py; do
             test -f "$tmp/bundle/runtime/$legacy"
             test -L "$tmp/bundle/runtime/$legacy"
           done
+          # Only the read-only TermuxService entrypoint survives migration;
+          # no built-in photo processor or helper symlinks may be installed.
+          test -f "$tmp/bundle/runtime/gallery_maintenance.py"
+          test ! -L "$tmp/bundle/runtime/gallery_maintenance.py"
+          test -x "$tmp/bundle/runtime/gallery_maintenance.py"
           mapfile -t regular < <(find "$tmp/bundle/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | sort)
           test "${#regular[@]}" -ge 21
           mkdir "$tmp/candidate"
           for file in "${regular[@]}"; do cp -a "$tmp/bundle/runtime/$file" "$tmp/candidate/$file"; done
-          if find "$tmp/candidate" -maxdepth 1 -name 'gallery*' | grep -q .; then
-            echo "Legacy aliases leaked into installed candidate" >&2
+          if find "$tmp/candidate" -maxdepth 1 -name 'gallery*' ! -name 'gallery_maintenance.py' | grep -q .; then
+            echo "Removed legacy gallery processors leaked into installed candidate" >&2
             exit 1
           fi
+          test -x "$tmp/candidate/gallery_maintenance.py"
           python -m py_compile "$tmp/candidate"/*.py
 
       - name: Parse shell scripts

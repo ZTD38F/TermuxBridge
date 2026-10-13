@@ -30,8 +30,7 @@ for legacy in \
   gallery_bridge_tools.py \
   gallery_intelligence.py \
   gallery_ocr.py \
-  gallery_shizuku.py \
-  gallery_maintenance.py
+  gallery_shizuku.py
 do
   ln -s compat_removed_builtin.py "$DEST/runtime/$legacy"
 done
