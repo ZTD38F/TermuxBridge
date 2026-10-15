@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.5"
+BRIDGE_VERSION = "1.2.37"
 
 import hashlib
 import hmac
@@ -10,19 +10,29 @@ import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import signal
+import re
+import itertools
 from pathlib import Path
 import subprocess
 import sys
 import time
 
+try:
+    from .execution_core import execute as streaming_execute
+    from . import queue_core
+except ImportError:
+    from execution_core import execute as streaming_execute
+    import queue_core
+
 ROOT = Path(os.environ.get("TERMUX_BRIDGE_ROOT", Path.home())).resolve()
 SHARED_ROOT = Path("/storage/emulated/0").resolve()
 ALLOWED_ROOTS = (ROOT, SHARED_ROOT)
 JOBS = Path(os.environ.get("TERMUX_BRIDGE_JOBS", ROOT / ".termux-mcp-bridge" / "jobs")).resolve()
-MAX_READ = 512_000
-MAX_OUTPUT = 256_000
+MAX_READ = 2_000_000
+MAX_OUTPUT = 1_000_000
 COMMAND_MODE = os.environ.get("TERMUX_BRIDGE_COMMAND_MODE", "open").lower()
-BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path.home() / "termux-mcp-bridge" / "secrets" / "backend_token")).resolve()
+BACKEND_TOKEN_FILE = Path(os.environ.get("TERMUX_BRIDGE_BACKEND_TOKEN_FILE", Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")) / "secrets" / "backend_token")).resolve()
 
 
 def _backend_token() -> str:
@@ -62,191 +72,124 @@ def schema(props=None, required=None):
 
 TOOLS = [
     {"name": "termux_status", "title": "Termux bridge status", "description": "Use this to verify the phone bridge, allowed root, Python, and active jobs.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "bridge_diagnostics", "title": "Bridge diagnostics", "description": "Sanitized runtime state, update progress, managed process health and unmanaged tunnel count.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "list_files", "title": "List phone files", "description": "List files inside the configured Termux root. Does not read file contents.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
-    {"name": "read_text", "title": "Read a text file", "description": "Read a bounded UTF-8 text file inside the configured Termux root.", "inputSchema": schema({"path": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_READ, "default": 100000}}, ["path"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "read_text", "title": "Read a text file", "description": "Read a bounded UTF-8 text file inside the configured Termux root.", "inputSchema": schema({"path": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 512_000, "default": 100000}}, ["path"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "search_text", "title": "Search text files", "description": "Search for a literal string in bounded text files inside the Termux root.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "query": {"type": "string", "minLength": 1, "maxLength": 500}, "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}, ["query"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "write_text", "title": "Write a text file safely", "description": "Create or replace one text file inside the allowed root. Existing files are backed up; expected_sha256 prevents stale overwrites.", "inputSchema": schema({"path": {"type": "string"}, "content": {"type": "string"}, "expected_sha256": {"type": "string"}}, ["path", "content"]), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
     {"name": "run_command", "title": "Run a Termux command", "description": "Run any executable available to the Termux user. For shell syntax, pass bash -lc as argv. Android/Termux OS permissions still apply; no root is assumed.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200}, "cwd": {"type": "string", "default": "."}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 30}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
     {"name": "start_job", "title": "Start a Termux background job", "description": "Start any executable available to the Termux user as a detached background job. For shell syntax, pass bash -lc as argv.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 200}, "cwd": {"type": "string", "default": "."}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "list_files_page", "title": "Paginated directory listing", "description": "List any page of a directory within permitted Termux or shared storage roots.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}, "offset": {"type": "integer", "minimum": 0, "default": 0}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "read_text_chunk", "title": "Read large text in chunks", "description": "Read a byte-offset page from a text file without loading the entire file into memory.", "inputSchema": schema({"path": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_READ, "default": 100000}, "offset": {"type": "integer", "minimum": 0, "default": 0}, "include_sha256": {"type": "boolean", "default": False}}, ["path"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "search_text_page", "title": "Search large files with pagination", "description": "Search text with match offsets and configurable per-file size.", "inputSchema": schema({"path": {"type": "string", "default": "."}, "query": {"type": "string", "minLength": 1, "maxLength": 500}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}, "offset": {"type": "integer", "minimum": 0, "default": 0}, "max_file_bytes": {"type": "integer", "minimum": 1, "maximum": 32_000_000, "default": MAX_READ}}, ["query"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "run_command_extended", "title": "Run command with expanded output", "description": "Execute using expanded argv capacity and adjustable bounded output (ordinary Termux UID).", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4096}, "cwd": {"type": "string", "default": "."}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 1800, "default": 30}, "max_output_chars": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT, "default": 256000}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "start_job_extended", "title": "Start expanded background job", "description": "Start a managed background process with up to 4096 argv items; no raw argv stored.", "inputSchema": schema({"argv": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 4096}, "cwd": {"type": "string", "default": "."}}, ["argv"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "read_job_log_extended", "title": "Read larger job log tail", "description": "Return a bounded larger tail of job output; outputs may include sensitive application data.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT, "default": 20000}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "stop_job", "title": "Stop tracked job", "description": "Send SIGTERM to an identity-verified job launched by this bridge, never SIGKILL.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}}, ["job_id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
     {"name": "job_status", "title": "Check background job", "description": "Check whether a bridge job is still running.", "inputSchema": schema({"job_id": {"type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-[0-9]+$"}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
-    {"name": "read_job_log", "title": "Read background job log", "description": "Read the tail of a background job log without exposing bridge secrets.", "inputSchema": schema({"job_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT, "default": 20000}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "read_job_log", "title": "Read background job log", "description": "Read the tail of a background job log without exposing bridge secrets.", "inputSchema": schema({"job_id": {"type": "string"}, "max_chars": {"type": "integer", "minimum": 1, "maximum": 256_000, "default": 20000}}, ["job_id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "queue_submit", "title": "Queue a durable Termux task", "description": "Submit a named health check or existing .sh inside the bridge root. SQLite stores no command arguments or credentials.", "inputSchema": schema({"task": {"type": "string", "enum": ["health", "script"]}, "script": {"type": "string"}, "priority": {"type": "integer", "minimum": 0, "maximum": 9, "default": 5}}, ["task"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+    {"name": "queue_list", "title": "List queued tasks", "description": "List persistent queue states, IDs and result codes.", "inputSchema": schema({"limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "queue_status", "title": "Inspect queued task", "description": "Read persisted task state and recorded exit status.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "queue_cancel", "title": "Cancel queued task", "description": "Cancel pending task or request termination of a running managed task.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
+    {"name": "queue_retry", "title": "Manually retry interrupted task", "description": "Explicitly retry a failed or interrupted task after reviewing side effects.", "inputSchema": schema({"id": {"type": "string", "pattern": "^[0-9a-f]{32}$"}}, ["id"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
+    {"name": "ecosystem_adapter_status", "title": "Adapter versions and health", "description": "List allowed adapter ABI, version, availability, and error isolation status.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_dashboard", "title": "Unified bridge dashboard", "description": "Sanitized local ecosystem health including adapter versions, queue, battery, updates and backups. Optionally create a private static HTML dashboard.", "inputSchema": schema({"html": {"type": "boolean", "default": False}}), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_create", "title": "Private configuration backup", "description": "Create a private integrity-checked local backup of allowlisted configuration and queue snapshot (no credentials).", "inputSchema": schema(), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_list", "title": "List local backup archives", "description": "Read names and sizes of local verified-generation backup files.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_verify", "title": "Verify local backup integrity", "description": "Verify keyed integrity and strict allowlist for one local archive.", "inputSchema": schema({"name": {"type": "string"}}, ["name"]), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
+    {"name": "ecosystem_backup_restore", "title": "Restore allowed configuration only", "description": "Default dry-run. Requires explicit confirm=true to restore only non-critical configuration (never secrets or live queue).", "inputSchema": schema({"name": {"type": "string"}, "confirm": {"type": "boolean", "default": False}}, ["name"]), "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False}},
+    {"name": "ecosystem_chaos_test", "title": "Safe synthetic fault test", "description": "Run disposable local failure-injection scenarios without touching active bridge processes.", "inputSchema": schema(), "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False}},
     {"name": "spotify_migrator", "title": "Run Spotify safe migrator", "description": "Run snapshot, resolve, plan, apply, verify, or status using spotify_v31_safe.py. Apply is a write action and ChatGPT should ask for confirmation.", "inputSchema": schema({"action": {"type": "string", "enum": ["snapshot", "resolve", "plan", "apply", "verify", "status"]}, "project_dir": {"type": "string", "default": "storage/downloads/Spotify_V3.1/work_v31/package"}, "background": {"type": "boolean", "default": True}}, ["action"]), "annotations": {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}},
 ]
 
 
-# Load the typed no-root Android controller. It deliberately keeps Android
-# security boundaries and action-bound confirmations for sensitive operations.
-PHONE_SERVER = ROOT / "ai-phone-control" / "mcp-server" / "server.py"
-PHONE_MODULE = None
-PHONE_TOOLS = {}
-if PHONE_SERVER.is_file():
-    _phone_spec = importlib.util.spec_from_file_location("phone_control_bridge", PHONE_SERVER)
-    if _phone_spec and _phone_spec.loader:
-        PHONE_MODULE = importlib.util.module_from_spec(_phone_spec)
-        _phone_spec.loader.exec_module(PHONE_MODULE)
-        PHONE_TOOLS = PHONE_MODULE.TOOLS
-        _phone_read_only = {
-            "phone_health", "get_device_state", "get_battery", "get_network_state",
-            "list_apps", "get_setting", "get_hotspot_state", "audit_tail",
-            "organizer_summary",
-        }
-        _phone_open_world = {"open_app", "open_settings_page", "import_chatgpt_export"}
-        for _name, (_input_schema, _handler) in PHONE_TOOLS.items():
-            TOOLS.append({
-                "name": f"phone_{_name}",
-                "title": f"Phone: {_name.replace('_', ' ')}",
-                "description": PHONE_MODULE.DESCRIPTIONS[_name],
-                "inputSchema": _input_schema,
-                "annotations": {
-                    "readOnlyHint": _name in _phone_read_only,
-                    "destructiveHint": _name in {"set_setting", "stop_app", "tap", "swipe", "type_text"},
-                    "openWorldHint": _name in _phone_open_world,
-                },
-            })
+# Each built-in adapter initializes independently. A broken optional adapter
+# cannot abort startup or interfere with the core MCP router.
+try:
+    from .adapter_runtime import AdapterRegistry
+    from . import ecosystem_core
+except ImportError:
+    from adapter_runtime import AdapterRegistry
+    import ecosystem_core
 
+ADAPTERS = AdapterRegistry()
+PHONE_SERVER = ROOT / "ai-phone-control" / "mcp-server" / "server.py"
+PHONE_MODULE = ADAPTERS.load("phone", PHONE_SERVER)
+PHONE_TOOLS = PHONE_MODULE.TOOLS if PHONE_MODULE is not None else {}
+_phone_read_only = {
+    "phone_health", "get_device_state", "get_battery", "get_network_state",
+    "list_apps", "get_setting", "get_hotspot_state", "audit_tail", "organizer_summary",
+}
+_phone_open_world = {"open_app", "open_settings_page", "import_chatgpt_export"}
+def _phone_public_name(source_name: str) -> str:
+    """Return the stable MCP name for a phone adapter tool without double-prefixing."""
+    return source_name if source_name.startswith("phone_") else f"phone_{source_name}"
+
+
+def _phone_source_name(public_name: str, source_tools=None) -> str:
+    """Accept canonical names plus the legacy phone_phone_* alias."""
+    tools = PHONE_TOOLS if source_tools is None else source_tools
+    if public_name in tools:
+        return public_name
+    return public_name.removeprefix("phone_")
+
+
+def _phone_public_names(source_name: str) -> tuple[str, ...]:
+    """Expose the canonical name and retain any previously published double-prefix alias."""
+    canonical = _phone_public_name(source_name)
+    legacy = f"phone_{source_name}"
+    return (canonical,) if legacy == canonical else (canonical, legacy)
+
+
+for _name, (_input_schema, _handler) in PHONE_TOOLS.items():
+    for _public_name in _phone_public_names(_name):
+        TOOLS.append({
+            "name": _public_name,
+            "title": f"Phone: {_name.replace('_',' ')}",
+            "description": PHONE_MODULE.DESCRIPTIONS[_name],
+            "inputSchema": _input_schema,
+            "annotations": {
+                "readOnlyHint": _name in _phone_read_only,
+                "destructiveHint": _name in {"set_setting","stop_app","tap","swipe","type_text"},
+                "openWorldHint": _name in _phone_open_world,
+            },
+        })
 
 GOOGLE_SERVER = Path(__file__).resolve().with_name("google_bridge_tools.py")
-GOOGLE_MODULE = None
-GOOGLE_TOOLS = {}
-if GOOGLE_SERVER.is_file():
-    _google_spec = importlib.util.spec_from_file_location("google_bridge_tools", GOOGLE_SERVER)
-    if _google_spec and _google_spec.loader:
-        GOOGLE_MODULE = importlib.util.module_from_spec(_google_spec)
-        _google_spec.loader.exec_module(GOOGLE_MODULE)
-        GOOGLE_TOOLS = GOOGLE_MODULE.TOOLS
-        for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
-            TOOLS.append({
-                "name": _name,
-                "title": _name.replace("_", " ").title(),
-                "description": GOOGLE_MODULE.DESCRIPTIONS[_name],
-                "inputSchema": _input_schema,
-                "annotations": {
-                    "readOnlyHint": _name in {"google_tasks_list_tasklists", "google_tasks_list_tasks", "google_keep_list_notes", "google_keep_search_notes", "google_maps_search"},
-                    "destructiveHint": _name == "google_tasks_delete_task",
-                    "openWorldHint": True,
-                },
-            })
+GOOGLE_MODULE = ADAPTERS.load("google", GOOGLE_SERVER)
+GOOGLE_TOOLS = GOOGLE_MODULE.TOOLS if GOOGLE_MODULE is not None else {}
+for _name, (_input_schema, _handler) in GOOGLE_TOOLS.items():
+    TOOLS.append({
+        "name": _name,
+        "title": _name.replace("_"," ").title(),
+        "description": GOOGLE_MODULE.DESCRIPTIONS[_name],
+        "inputSchema": _input_schema,
+        "annotations": {
+            "readOnlyHint": _name in {"google_tasks_list_tasklists","google_tasks_list_tasks",
+                                     "google_keep_list_notes","google_keep_search_notes",
+                                     "google_maps_search"},
+            "destructiveHint": _name == "google_tasks_delete_task",
+            "openWorldHint": True,
+        },
+    })
 
+try:
+    from .external_addons import ExternalAddonRegistry
+except ImportError:
+    from external_addons import ExternalAddonRegistry
 
-
-GALLERY_SERVER = Path(__file__).resolve().with_name("gallery_bridge_tools.py")
-GALLERY_MODULE = None
-GALLERY_TOOLS = {}
-if GALLERY_SERVER.is_file():
-    _gallery_spec = importlib.util.spec_from_file_location("gallery_bridge_tools", GALLERY_SERVER)
-    if _gallery_spec and _gallery_spec.loader:
-        GALLERY_MODULE = importlib.util.module_from_spec(_gallery_spec)
-        _gallery_spec.loader.exec_module(GALLERY_MODULE)
-        GALLERY_TOOLS = GALLERY_MODULE.TOOLS
-        for _name, (_input_schema, _handler) in GALLERY_TOOLS.items():
-            TOOLS.append({
-                "name": _name,
-                "title": _name.replace("_", " ").title(),
-                "description": GALLERY_MODULE.DESCRIPTIONS[_name],
-                "inputSchema": _input_schema,
-                "annotations": {
-                    "readOnlyHint": _name in GALLERY_MODULE.READ_ONLY,
-                    "destructiveHint": False,
-                    "openWorldHint": False,
-                },
-            })
-
-
-def gallery_virtual_read(path: str, max_chars: int = 100000):
-    """Backward-compatible image access through the long-lived read_text tool.
-
-    Existing ChatGPT sessions can keep using the already-discovered read_text
-    tool even when the MCP client has not refreshed the newly added gallery_*
-    tool list yet.
-    """
-    if GALLERY_MODULE is None:
-        raise ValueError("Gallery bridge is unavailable")
-    from urllib.parse import parse_qs, urlparse
-
-    parsed = urlparse(path)
-    if parsed.scheme != "gallery":
-        raise ValueError("Not a gallery virtual path")
-    route = (parsed.netloc + parsed.path).strip("/")
-    query = parse_qs(parsed.query, keep_blank_values=False)
-
-    def one(name, default=None):
-        values = query.get(name)
-        return values[-1] if values else default
-
-    if route.startswith("image/"):
-        image_id = int(route.split("/", 1)[1])
-        edge = int(one("max_edge", "3072"))
-        quality = int(one("quality", "90"))
-        return GALLERY_MODULE.gallery_get_image({"id": image_id, "max_edge": edge, "quality": quality})
-
-    if route.startswith("thumbnail/"):
-        image_id = int(route.split("/", 1)[1])
-        edge = int(one("max_edge", "768"))
-        return GALLERY_MODULE.gallery_thumbnail({"id": image_id, "max_edge": edge})
-
-    if route in {"contact-sheet", "contact_sheet"}:
-        args = {
-            "limit": int(one("limit", "36")),
-            "offset": int(one("offset", "0")),
-            "columns": int(one("columns", "6")),
-            "sort": one("sort", "newest"),
-        }
-        for key in ("query", "album", "date_from", "date_to"):
-            value = one(key)
-            if value not in (None, ""):
-                args[key] = value
-        return GALLERY_MODULE.gallery_contact_sheet(args)
-
-    if route == "status":
-        return GALLERY_MODULE.gallery_status({})
-
-    if route == "albums":
-        args = {"limit": int(one("limit", "100"))}
-        value = one("query")
-        if value:
-            args["query"] = value
-        return GALLERY_MODULE.gallery_albums(args)
-
-    if route == "list":
-        args = {
-            "limit": int(one("limit", "50")),
-            "offset": int(one("offset", "0")),
-            "sort": one("sort", "newest"),
-        }
-        for key in ("query", "album", "date_from", "date_to"):
-            value = one(key)
-            if value not in (None, ""):
-                args[key] = value
-        return GALLERY_MODULE.gallery_list(args)
-
-    # Sonoryx Photo Intelligence routes, available via the existing read_text tool.
-    if route in {"health", "search", "duplicates"} or route.startswith("metadata/") or route == "similar":
-        if route == "health":
-            return GALLERY_MODULE.gallery_status({})
-        if route == "search":
-            args = {"limit": int(one("limit", "50")), "offset": int(one("offset", "0")),
-                    "sort": one("sort", "newest")}
-            for key in ("query", "album", "date_from", "date_to"):
-                val = one(key)
-                if val:
-                    args[key] = val
-            return GALLERY_MODULE.gallery_search(args)
-        if route == "duplicates":
-            return GALLERY_MODULE.gallery_find_duplicates({
-                "max_files": int(one("max_files", "200")),
-                "max_megabytes": int(one("max_megabytes", "128"))})
-        if route == "similar":
-            ids = [int(x) for x in (one("ids", "").split(",")) if x.strip()]
-            return GALLERY_MODULE.gallery_similar({
-                "ids": ids, "threshold": int(one("threshold", "8"))})
-        return GALLERY_MODULE.gallery_metadata({"id": int(route.split("/", 1)[1])})
-
-    raise ValueError(
-        "Unknown gallery virtual path; use gallery://image/ID, "
-        "gallery://thumbnail/ID, gallery://contact-sheet, gallery://status, "
-        "gallery://albums, or gallery://list"
-    )
-
+EXTERNAL_ADDONS = ExternalAddonRegistry()
+_existing_tool_names = {item["name"] for item in TOOLS}
+EXTERNAL_TOOL_RECORDS = []
+for _record in EXTERNAL_ADDONS.discover():
+    if _record["name"] in _existing_tool_names:
+        continue
+    TOOLS.append(_record)
+    EXTERNAL_TOOL_RECORDS.append(_record)
+    _existing_tool_names.add(_record["name"])
+EXTERNAL_TOOL_NAMES = {item["name"] for item in EXTERNAL_TOOL_RECORDS}
+TOOLS.append({"name":"addon_status","title":"Installed addons","description":"List locally installed TermuxBridge addons and their isolated runtime status.","inputSchema":schema(),"annotations":{"readOnlyHint":True,"destructiveHint":False,"openWorldHint":False}})
 
 def checked_argv(argv):
     """Open command mode: validate transport shape only, not executable policy.
@@ -257,8 +200,8 @@ def checked_argv(argv):
     """
     if not isinstance(argv, list) or not argv or any(not isinstance(x, str) or "\x00" in x for x in argv):
         raise ValueError("argv must be a non-empty string array without NUL bytes")
-    if len(argv) > 200:
-        raise ValueError("argv may contain at most 200 items")
+    if len(argv) > 4096 or sum(len(x.encode("utf-8")) for x in argv) > 512_000:
+        raise ValueError("argv exceeds 4096 items or 512 KB transport limit")
     return argv
 
 
@@ -271,26 +214,111 @@ def execution_cwd(cwd):
         raise ValueError(f"cwd is not a directory: {p}")
     return p
 
-def run(argv, cwd, timeout=30):
-    proc = subprocess.run(checked_argv(argv), cwd=execution_cwd(cwd), text=True, capture_output=True, timeout=timeout, env=os.environ.copy())
-    out = (proc.stdout + proc.stderr)[-MAX_OUTPUT:]
-    return {"exit_code": proc.returncode, "output": out, "truncated": len(proc.stdout) + len(proc.stderr) > MAX_OUTPUT}
+def process_identity(pid):
+    """Verify owner/start time and refuse zombie or reused PIDs."""
+    try:
+        p = Path("/proc") / str(int(pid))
+        if p.stat().st_uid != os.getuid(): return None
+        fields = (p / "stat").read_text().rsplit(") ", 1)[1].split()
+        return int(fields[19]) if fields[0] != "Z" else None
+    except (OSError, ValueError, IndexError): return None
+
+
+def job_alive(meta):
+    actual = process_identity(meta.get("pid", 0))
+    return actual is not None and meta.get("start_ticks") is not None and actual == meta["start_ticks"]
+
+
+def bridge_diagnostics():
+    root = Path(os.environ.get("TERMUXBRIDGE_ROOT", Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge"))))
+    output = {"version": BRIDGE_VERSION}
+    for section, keys in (("route", ("generation", "port")),
+                          ("update", ("phase", "update_kind", "current_generation")),
+                          ("tunnel_status", ("state", "reason", "attempts", "exit_code"))):
+        try:
+            values = json.loads((root / "state" / (section + ".json")).read_text())
+            output[section] = {key: values.get(key) for key in keys}
+        except (OSError, ValueError):
+            output[section] = {"available": False}
+    output["processes"] = {}
+    for label, filename in (("watchdog", "watchdog.pid"), ("tunnel", "bridge.pid"),
+                            ("supervisor", "supervisor.pid"), ("mcp", "server.pid"),
+                            ("proxy", "proxy.pid")):
+        try:
+            output["processes"][label] = process_identity(int((root / filename).read_text())) is not None
+        except (OSError, ValueError):
+            output["processes"][label] = False
+    extra = 0
+    try: tracked = int((root / "bridge.pid").read_text())
+    except (OSError, ValueError): tracked = -1
+    binary = (root / "bin/tunnel-client-runtime").resolve()
+    for p in Path("/proc").iterdir():
+        if not p.name.isdecimal() or int(p.name) == tracked: continue
+        try:
+            if p.stat().st_uid != os.getuid(): continue
+            args = [v for v in (p / "cmdline").read_bytes().split(b"\\0") if v]
+            if len(args)>1 and args[1]==b"run" and Path(os.fsdecode(args[0])).resolve()==binary:
+                extra += 1
+        except (OSError, ValueError): pass
+    output["unmanaged_tunnel_instances"] = extra
+    output["optional_integrations"] = {"phone": PHONE_MODULE is not None, "google": GOOGLE_MODULE is not None}
+    return output
+
+
+def run(argv, cwd, timeout=30, max_output_chars=256000):
+    return streaming_execute(checked_argv(argv), str(execution_cwd(cwd)),
+                             timeout=timeout, max_output_chars=max_output_chars)
 
 
 def start(argv, cwd):
     JOBS.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    log = JOBS / f"pending-{stamp}.log"
+    JOBS.chmod(0o700)
+    log = JOBS / f"pending-{stamp}-{os.getpid()}.log"
     fh = log.open("ab", buffering=0)
-    proc = subprocess.Popen(checked_argv(argv), cwd=execution_cwd(cwd), stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+    log.chmod(0o600)
+    try:
+        proc = subprocess.Popen(checked_argv(argv), cwd=execution_cwd(cwd), stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+    finally:
+        fh.close()
     job_id = f"{stamp}-{proc.pid}"
     final = JOBS / f"{job_id}.log"
     log.rename(final)
-    (JOBS / f"{job_id}.json").write_text(json.dumps({"pid": proc.pid, "argv": argv, "cwd": str(execution_cwd(cwd)), "log": str(final)}), encoding="utf-8")
+    meta = JOBS / f"{job_id}.json"
+    meta.write_text(json.dumps({"pid": proc.pid, "start_ticks": process_identity(proc.pid), "cwd": str(execution_cwd(cwd)), "log": str(final), "argv_count": len(argv)}), encoding="utf-8")
+    meta.chmod(0o600)
     return {"job_id": job_id, "pid": proc.pid, "log": str(final)}
 
 
 def call(name, a):
+    if name == "ecosystem_adapter_status":
+        return ADAPTERS.status()
+    if name == "ecosystem_dashboard":
+        return ecosystem_core.dashboard(
+            Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")), adapters=ADAPTERS.status(),
+            html_file=bool(a.get("html",False)))
+    if name == "ecosystem_backup_create":
+        return ecosystem_core.backup_create(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")))
+    if name == "ecosystem_backup_list":
+        return ecosystem_core.backup_list(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")))
+    if name == "ecosystem_backup_verify":
+        return ecosystem_core.backup_verify(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")), a["name"])
+    if name == "ecosystem_backup_restore":
+        return ecosystem_core.backup_restore(Path(os.environ.get("TERMUXBRIDGE_ROOT", Path.home() / "termux-mcp-bridge")),
+                                              a["name"], confirm=bool(a.get("confirm",False)))
+    if name == "ecosystem_chaos_test":
+        return ecosystem_core.chaos_selftest()
+    if name == "queue_submit":
+        return queue_core.submit(a["task"], a.get("script"), a.get("priority", 5))
+    if name == "queue_list":
+        return queue_core.listing(a.get("limit", 25))
+    if name == "queue_status":
+        return queue_core.status(a["id"])
+    if name == "queue_cancel":
+        return queue_core.cancel(a["id"])
+    if name == "queue_retry":
+        return queue_core.retry(a["id"])
+    if name == "bridge_diagnostics": return bridge_diagnostics()
     if name == "termux_status":
         active = 0
         JOBS.mkdir(parents=True, exist_ok=True)
@@ -300,28 +328,43 @@ def call(name, a):
                 os.kill(pid, 0); active += 1
             except Exception: pass
         return {"ok": True, "root": str(ROOT), "python": sys.version.split()[0], "active_jobs": active, "command_mode": COMMAND_MODE, "execution": "unrestricted-as-Termux-user"}
-    if name == "list_files":
-        p = inside(a.get("path", ".")); limit = a.get("limit", 100)
-        return [{"name": x.name, "type": "dir" if x.is_dir() else "file", "size": x.stat().st_size if x.is_file() else None} for x in sorted(p.iterdir())[:limit]]
-    if name == "read_text":
-        if isinstance(a.get("path"), str) and a["path"].startswith("gallery://"):
-            return gallery_virtual_read(a["path"], a.get("max_chars", 100000))
+    if name in {"list_files", "list_files_page"}:
+        p = inside(a.get("path", ".")); limit = a.get("limit", 100); offset = a.get("offset", 0)
+        return [{"name": x.name, "type": "dir" if x.is_dir() else "file", "size": x.stat().st_size if x.is_file() else None} for x in itertools.islice(sorted(p.iterdir()), offset, offset + limit)]
+    if name in {"read_text", "read_text_chunk"}:
+        if isinstance(a.get("path"), str) and EXTERNAL_ADDONS.can_virtual(a["path"]):
+            return EXTERNAL_ADDONS.virtual_read(a["path"], a.get("max_chars", 100000))
         p = inside(a["path"]); n = a.get("max_chars", 100000)
-        data = p.read_bytes()[:n + 1]
-        return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "text": data[:n].decode("utf-8", "replace"), "truncated": len(data) > n}
-    if name == "search_text":
-        base = inside(a.get("path", ".")); query = a["query"]; limit = a.get("limit", 100); hits = []
+        offset = a.get("offset", 0); size = p.stat().st_size
+        with p.open("rb") as file:
+            file.seek(offset); data = file.read(n + 1)
+        digest = None
+        if a.get("include_sha256", True):
+            h = hashlib.sha256()
+            with p.open("rb") as file:
+                for chunk in iter(lambda: file.read(1024 * 1024), b""): h.update(chunk)
+            digest = h.hexdigest()
+        returned = min(n, len(data))
+        return {"path": str(p), "sha256": digest, "text": data[:n].decode("utf-8", "replace"),
+                "truncated": len(data) > n, "size": size, "offset": offset,
+                "next_offset": offset + returned if offset + returned < size else None}
+    if name in {"search_text", "search_text_page"}:
+        base = inside(a.get("path", ".")); query = a["query"]; limit = a.get("limit", 100); hits = []; seen = 0
+        offset = a.get("offset", 0); max_bytes = a.get("max_file_bytes", MAX_READ)
         files = [base] if base.is_file() else base.rglob("*")
         for p in files:
             if len(hits) >= limit: break
-            if not p.is_file() or p.stat().st_size > MAX_READ: continue
+            if not p.is_file() or p.stat().st_size > max_bytes: continue
             try:
                 for number, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
                     if query in line:
-                        hits.append({"path": str(p.relative_to(ROOT)), "line": number, "text": line[:500]})
-                        if len(hits) >= limit: break
+                        if seen >= offset:
+                            hits.append({"path": str(p.relative_to(ROOT)), "line": number, "text": line[:2000]})
+                            if len(hits) >= limit: break
+                        seen += 1
             except (UnicodeDecodeError, OSError): pass
-        return {"query": query, "hits": hits, "limited": len(hits) >= limit}
+        return {"query": query, "hits": hits, "limited": len(hits) >= limit,
+                "offset": offset, "next_offset": offset + len(hits) if len(hits) >= limit else None}
     if name == "write_text":
         p = inside(a["path"]); p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
@@ -330,28 +373,38 @@ def call(name, a):
             backup = p.with_suffix(p.suffix + ".bridge-backup"); backup.write_bytes(p.read_bytes())
         tmp = p.with_suffix(p.suffix + ".bridge-tmp"); tmp.write_text(a["content"], encoding="utf-8"); tmp.replace(p)
         return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "backup_created": p.with_suffix(p.suffix + ".bridge-backup").exists()}
-    if name == "run_command": return run(a["argv"], a.get("cwd", "."), a.get("timeout_seconds", 30))
-    if name == "start_job": return start(a["argv"], a.get("cwd", "."))
-    if name in {"job_status", "read_job_log"}:
+    if name in {"run_command", "run_command_extended"}: return run(a["argv"], a.get("cwd", "."), a.get("timeout_seconds", 30), a.get("max_output_chars", 256000))
+    if name in {"start_job", "start_job_extended"}: return start(a["argv"], a.get("cwd", "."))
+    if name in {"job_status", "read_job_log", "read_job_log_extended", "stop_job"}:
         job_id = a["job_id"]
         if any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for c in job_id): raise ValueError("Invalid job ID")
         meta = json.loads((JOBS / f"{job_id}.json").read_text())
         if name == "job_status":
-            try: os.kill(meta["pid"], 0); running = True
-            except OSError: running = False
-            return {"job_id": job_id, "running": running, "pid": meta["pid"]}
-        n = a.get("max_chars", 20000); data = Path(meta["log"]).read_bytes(); return {"job_id": job_id, "text": data[-n:].decode("utf-8", "replace"), "truncated": len(data) > n}
+            return {"job_id": job_id, "running": job_alive(meta), "pid": meta["pid"], "identity_verified": meta.get("start_ticks") is not None}
+        if name == "stop_job":
+            if meta.get("start_ticks") is None: raise ValueError("Legacy job has no birth identity")
+            if not job_alive(meta): return {"job_id": job_id, "signal_sent": False, "running": False}
+            os.kill(meta["pid"], signal.SIGTERM)
+            return {"job_id": job_id, "signal_sent": True, "signal": "SIGTERM"}
+        n = a.get("max_chars", 20000)
+        with Path(meta["log"]).open("rb") as file:
+            size = file.seek(0, 2); file.seek(max(0, size - n)); data = file.read(n)
+        return {"job_id": job_id, "text": data.decode("utf-8", "replace"), "truncated": size > n}
     if name == "spotify_migrator":
         d = inside(a.get("project_dir", "storage/downloads/Spotify_V3.1/work_v31/package")); script = d / "spotify_v31_safe.py"
         if not script.is_file(): raise ValueError(f"Migrator not found: {script}")
         argv = ["python", str(script), a["action"]]
         return start(argv, str(d)) if a.get("background", True) else run(argv, str(d), 120)
+    if name == "addon_status":
+        return {"ok": True, "addons": EXTERNAL_ADDONS.status()}
+    if name in EXTERNAL_TOOL_NAMES:
+        return EXTERNAL_ADDONS.invoke(name, a)
     if name.startswith("phone_"):
-        phone_name = name.removeprefix("phone_")
+        phone_name = _phone_source_name(name)
         if PHONE_MODULE is None or phone_name not in PHONE_TOOLS:
             raise ValueError(f"Unknown phone tool: {phone_name}")
         try:
-            value = PHONE_TOOLS[phone_name][1](a)
+            value = ADAPTERS.invoke("phone", _phone_public_name(phone_name), a)
             ok = not (isinstance(value, dict) and value.get("ok") is False)
             PHONE_MODULE._audit(phone_name, ok, "completed" if ok else "capability unavailable or command failed")
             if not ok:
@@ -360,14 +413,10 @@ def call(name, a):
         except (ValueError, PermissionError, TypeError):
             PHONE_MODULE._audit(phone_name, False, "validation or approval failed")
             raise
-    if name.startswith("gallery_"):
-        if GALLERY_MODULE is None or name not in GALLERY_TOOLS:
-            raise ValueError(f"Unknown gallery tool: {name}")
-        return GALLERY_TOOLS[name][1](a)
     if name.startswith("google_"):
         if GOOGLE_MODULE is None or name not in GOOGLE_TOOLS:
             raise ValueError(f"Unknown Google tool: {name}")
-        return GOOGLE_TOOLS[name][1](a)
+        return ADAPTERS.invoke("google",name,a)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -434,6 +483,7 @@ def main():
     if "--http" in sys.argv:
         index = sys.argv.index("--http")
         port = int(sys.argv[index + 1]) if len(sys.argv) > index + 1 else 8765
+        queue_core.start_worker()
         ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     else:
         for line in sys.stdin:

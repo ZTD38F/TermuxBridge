@@ -29,15 +29,23 @@ SELF_HOSTED_UPDATE=0
 
 RUNTIME_FILES=(
   bridge_server.py
-  gallery_bridge_tools.py
-  gallery_intelligence.py
   google_bridge_tools.py
   local_https_proxy.py
   check_bridge_syntax.py
   check_phone_bridge.py
   validate_phone_integration.py
+  maintenance_health.py
+  execution_core.py
+  queue_core.py
+  rollback_guard.py
+  autonomy_engine.py
+  adapter_runtime.py
+  external_addons.py
+  addon_services.py
+  ecosystem_core.py
+  ecosystem_cli.py
 )
-MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py)
+MANAGEMENT_FILES=(start_bridge.sh status_bridge.sh stop_bridge.sh supervisor.py recover_bridge_port.py tunnel_watchdog.py maintain_bridge.sh scheduled_maintain_bridge.sh boot_bridge.sh)
 
 mkdir -p "$ROOT/logs" "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
 chmod 700 "$ROOT/secrets" "$STATE_DIR" "$RELEASES"
@@ -48,6 +56,28 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG"; }
 
 cleanup() {
   local rc=$?
+  # Before route switch, retire only our own exact candidate backend on failure.
+  # A failing contract check must not leak a stale listener into the next update.
+  if [[ "$rc" -ne 0 && "$SWITCHED" == 0 && -n "${CANDIDATE_PID:-}" ]]; then
+    if candidate_owned "$CANDIDATE_PID" "$TARGET" "$CANDIDATE_PORT"; then
+      kill -TERM "$CANDIDATE_PID" 2>/dev/null || true
+      log "stopped verified failed candidate pid=$CANDIDATE_PID"
+    fi
+    python - "$JOURNAL" <<'PY'
+import json,os,pathlib,sys,time
+p=pathlib.Path(sys.argv[1])
+if p.exists():
+    try:
+        d=json.loads(p.read_text())
+        if d.get("phase") == "CANDIDATE_STARTING":
+            d.update(phase="FAILED_PRE_SWITCH",failure_reason="pre-switch validation failed",updated_at=int(time.time()))
+            tmp=p.with_suffix(".tmp")
+            tmp.write_text(json.dumps(d,separators=(",",":"))+"\n",encoding="utf-8")
+            os.replace(tmp,p)
+    except (OSError,ValueError):
+        pass
+PY
+  fi
   [[ -z "$TMP" || ! -d "$TMP" ]] || rm -rf "$TMP"
   exit "$rc"
 }
@@ -105,6 +135,25 @@ PY
 
 pid_alive() { [[ "${1:-}" =~ ^[0-9]+$ && "${1:-0}" -gt 1 ]] && kill -0 "$1" 2>/dev/null; }
 
+candidate_owned() {
+  local pid="$1" generation="$2" port="$3"
+  [[ "$pid" =~ ^[0-9]+$ && "$generation" =~ ^[0-9a-f]{40}$ && "$port" =~ ^[0-9]+$ ]] || return 1
+  python - "$pid" "$RELEASES/$generation/bridge_server.py" "$port" <<'PY'
+import os,pathlib,sys
+pid=int(sys.argv[1])
+path=pathlib.Path("/proc")/str(pid)
+try:
+    if path.stat().st_uid!=os.getuid():raise SystemExit(1)
+    args=[os.fsdecode(x) for x in (path/"cmdline").read_bytes().split(b"\0") if x]
+    expected=str(pathlib.Path(sys.argv[2]).resolve())
+    if expected not in args:raise SystemExit(1)
+    index=args.index("--http")
+    if int(args[index+1])!=int(sys.argv[3]):raise SystemExit(1)
+except (OSError,ValueError,IndexError):
+    raise SystemExit(1)
+PY
+}
+
 backend_health() {
   local port="$1"
   python - "$port" "$BACKEND_TOKEN_FILE" <<'PY' >/dev/null 2>&1
@@ -161,10 +210,10 @@ PY
 
 recover_unfinished() {
   [[ -s "$JOURNAL" ]] || return 0
-  read -r phase prev_gen prev_port prev_pid cand_pid < <(python - "$JOURNAL" <<'PY'
+  read -r phase prev_gen prev_port prev_pid cand_pid cand_gen cand_port < <(python - "$JOURNAL" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1]))
-print(d.get("phase",""), d.get("previous_generation",""), d.get("previous_port",0), d.get("previous_pid",0), d.get("candidate_pid",0))
+print(d.get("phase",""), d.get("previous_generation",""), d.get("previous_port",0), d.get("previous_pid",0), d.get("candidate_pid",0), d.get("candidate_generation",""), d.get("candidate_port",0))
 PY
 )
   case "$phase" in
@@ -172,7 +221,9 @@ PY
   esac
   log "recovering interrupted update phase=$phase"
   if [[ -n "$prev_gen" && "$prev_port" != 0 ]]; then write_route "$prev_gen" "$prev_port"; fi
-  if pid_alive "$cand_pid"; then kill "$cand_pid" 2>/dev/null || true; fi
+  if pid_alive "$cand_pid" && candidate_owned "$cand_pid" "$cand_gen" "$cand_port"; then
+    kill -TERM "$cand_pid" 2>/dev/null || true
+  fi
   if pid_alive "$prev_pid"; then printf '%s\n' "$prev_pid" >"$ROOT/server.pid"; fi
   python - "$JOURNAL" <<'PY'
 import json,os,pathlib,sys,time
@@ -191,7 +242,17 @@ install_management_from_stage() {
   fi
   cp -a "$source_root/runtime/recover_bridge_port.py" "$ROOT/recover_bridge_port.py"
   cp -a "$source_root/runtime/tunnel_watchdog.py" "$ROOT/tunnel_watchdog.py"
-  cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh"
+  # Atomically replace scripts that may currently be executing.
+  # cp directly onto a running bash script can corrupt its remaining commands.
+  cp -a "$source_root/runtime/scheduled_maintain_bridge.sh" "$ROOT/scheduled_maintain_bridge.sh.next"
+  chmod 700 "$ROOT/scheduled_maintain_bridge.sh.next"
+  mv -f "$ROOT/scheduled_maintain_bridge.sh.next" "$ROOT/scheduled_maintain_bridge.sh"
+  cp -a "$source_root/runtime/maintain_bridge.sh" "$ROOT/maintain_bridge.sh.next"
+  chmod 700 "$ROOT/maintain_bridge.sh.next"
+  mv -f "$ROOT/maintain_bridge.sh.next" "$ROOT/maintain_bridge.sh"
+  cp -a "$source_root/update_termux.sh" "$ROOT/update_termux.sh.next"
+  chmod 700 "$ROOT/update_termux.sh.next"
+  mv -f "$ROOT/update_termux.sh.next" "$ROOT/update_termux.sh"
   mkdir -p "$HOME/bin"
   cp -a "$source_root/termuxbridgectl" "$HOME/bin/termuxbridgectl"
   # Replace the legacy gpt command with the versioned repository launcher.
@@ -204,6 +265,16 @@ install_management_from_stage() {
   fi
   cp -a "$source_root/runtime/gpt" "$gpt_target"
   chmod 700 "$gpt_target"
+  # Install only our own managed boot hook; never overwrite user scripts.
+  mkdir -p "$HOME/.termux/boot"
+  local boot_target="$HOME/.termux/boot/20-termuxbridge.sh"
+  if [[ ! -e "$boot_target" ]] || grep -Fq 'TermuxBridge managed boot hook' "$boot_target" 2>/dev/null; then
+    cp -a "$source_root/runtime/boot_bridge.sh" "$boot_target.next"
+    chmod 700 "$boot_target.next"
+    mv -f "$boot_target.next" "$boot_target"
+  else
+    log "custom Termux:Boot hook exists; left unchanged"
+  fi
   chmod 700 "$ROOT/start_bridge.sh" "$ROOT/status_bridge.sh" "$ROOT/stop_bridge.sh" "$ROOT/update_termux.sh" "$HOME/bin/termuxbridgectl"
   chmod 600 "$ROOT/supervisor.py" "$ROOT/recover_bridge_port.py" "$ROOT/tunnel_watchdog.py"
 }
@@ -257,22 +328,41 @@ recover_unfinished
 CURRENT="$(cat "$STATE" 2>/dev/null || true)"
 TARGET_TAG=""
 if [[ "$CHANNEL" == "stable" ]]; then
-  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null || true)"
-  if [[ -n "$RELEASE_JSON" ]]; then
-    read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
-    if [[ -n "$TARGET_TAG" && "$RELEASE_DRAFT" == false && "$RELEASE_PRERELEASE" == false ]]; then
-      TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
-        python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
-    else
-      TARGET_TAG=""
-    fi
+  # Production maintenance accepts published checksum-verified releases only.
+  # Never silently fall back to an unsigned/unpublished branch archive.
+  RELEASE_JSON="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/releases/latest")" || {
+    log "ERROR stable release metadata unavailable"
+    exit 1
+  }
+  read -r TARGET_TAG RELEASE_DRAFT RELEASE_PRERELEASE < <(python -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name",""), str(bool(d.get("draft"))).lower(), str(bool(d.get("prerelease"))).lower())' <<<"$RELEASE_JSON")
+  if [[ ! "$TARGET_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$RELEASE_DRAFT" != false || "$RELEASE_PRERELEASE" != false ]]; then
+    log "ERROR latest stable release metadata invalid"
+    exit 1
   fi
-fi
-if [[ -z "${TARGET:-}" ]]; then
+  TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$TARGET_TAG" |
+    python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+else
+  # Non-stable channels are explicit development mode, not automatic maintenance.
   TARGET="$(curl -fsSL --retry 4 --retry-delay 2 --connect-timeout 15 --max-time 60 "https://api.github.com/repos/$REPO/commits/$CHANNEL" |
     python -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
 fi
 [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]] || { log "ERROR invalid target SHA"; exit 1; }
+# A backend-failed release must never be silently reinstalled by the
+# hourly automatic update. Explicit --force overrides quarantine for operators.
+if [[ "${1:-}" != "--force" && -f "$STATE_DIR/quarantine.json" ]]; then
+  if python - "$STATE_DIR/quarantine.json" "$TARGET" <<'PY'
+import json,sys
+try:
+    data=json.load(open(sys.argv[1]))
+    raise SystemExit(0 if data.get("generation")==sys.argv[2] else 1)
+except (OSError,ValueError):
+    raise SystemExit(1)
+PY
+  then
+    log "skipped quarantined release $TARGET; waiting for a newer stable version"
+    exit 0
+  fi
+fi
 if [[ "$CURRENT" == "$TARGET" && "${1:-}" != "--force" && "${1:-}" != "--repair" ]]; then
   UPDATE_PHASE="$(python - "$JOURNAL" <<'PY'
 import json,pathlib,sys
@@ -314,11 +404,20 @@ journal DOWNLOADED
 for file in "${RUNTIME_FILES[@]}" "${MANAGEMENT_FILES[@]}"; do
   [[ -f "$TMP/source/runtime/$file" ]] || { journal FAILED_PRE_SWITCH "missing runtime/$file"; exit 1; }
 done
+# Stage every verified Python helper, not only the historical fixed list.
+# Otherwise old updaters omit newly introduced source modules.
+mapfile -t STAGED_RUNTIME_FILES < <(find "$TMP/source/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | LC_ALL=C sort)
+[[ "${#STAGED_RUNTIME_FILES[@]}" -ge "${#RUNTIME_FILES[@]}" ]] || {
+  journal FAILED_PRE_SWITCH "verified release has too few runtime files"; exit 1;
+}
+for file in "${STAGED_RUNTIME_FILES[@]}"; do
+  [[ "$file" =~ ^[a-zA-Z0-9_-]+\.py$ ]] || { journal FAILED_PRE_SWITCH "invalid runtime file name"; exit 1; }
+done
 [[ -f "$TMP/source/update_termux.sh" && -f "$TMP/source/termuxbridgectl" && -f "$TMP/source/runtime/gpt" ]] || { journal FAILED_PRE_SWITCH "missing management scripts"; exit 1; }
 [[ -f "$TMP/source/TUNNEL_CLIENT_VERSION" ]] || { journal FAILED_PRE_SWITCH "missing tunnel pin"; exit 1; }
 
 python -m py_compile "$TMP/source/runtime/"*.py
-for file in start_bridge.sh status_bridge.sh stop_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
+for file in start_bridge.sh status_bridge.sh stop_bridge.sh maintain_bridge.sh scheduled_maintain_bridge.sh boot_bridge.sh; do bash -n "$TMP/source/runtime/$file"; done
 bash -n "$TMP/source/update_termux.sh" "$TMP/source/termuxbridgectl" "$TMP/source/runtime/gpt"
 journal VERIFIED_ARTIFACT
 
@@ -326,9 +425,25 @@ journal VERIFIED_ARTIFACT
 # unversioned gpt launcher remains installed. --force must repair management
 # files without attempting to stage the same immutable runtime directory again.
 if [[ "$CURRENT" == "$TARGET" ]]; then
+  # Verify and repair MISSING helpers from the same checksum-verified release.
+  # Never overwrite an existing immutable source file with different content.
+  active_release="$(readlink -f "$ROOT/current" 2>/dev/null || true)"
+  [[ "$active_release" == "$RELEASES/$CURRENT" ]] || {
+    journal FAILED_PRE_SWITCH "current generation link mismatch"; exit 1;
+  }
+  for file in "${STAGED_RUNTIME_FILES[@]}"; do
+    if [[ ! -e "$active_release/$file" && ! -L "$active_release/$file" ]]; then
+      cp -a "$TMP/source/runtime/$file" "$active_release/.$file.repair.tmp"
+      chmod 600 "$active_release/.$file.repair.tmp"
+      mv -f "$active_release/.$file.repair.tmp" "$active_release/$file"
+      log "repaired missing verified runtime helper $file"
+    elif [[ -L "$active_release/$file" ]] || ! cmp -s "$TMP/source/runtime/$file" "$active_release/$file"; then
+      journal FAILED_PRE_SWITCH "existing immutable runtime file differs"; exit 1
+    fi
+  done
   install_management_from_stage "$TMP/source"
   journal COMMITTED
-  log "ok repaired management files at current commit $CURRENT"
+  log "ok repaired active generation and management at current commit $CURRENT"
   exit 0
 fi
 
@@ -344,7 +459,7 @@ if [[ -e "$CANDIDATE" || -L "$CANDIDATE" ]]; then
     journal FAILED_PRE_SWITCH "candidate generation is active, linked, or invalid"
     exit 1
   fi
-  for file in "${RUNTIME_FILES[@]}"; do
+  for file in "${STAGED_RUNTIME_FILES[@]}"; do
     if [[ ! -f "$CANDIDATE/$file" ]] || ! cmp -s "$TMP/source/runtime/$file" "$CANDIDATE/$file"; then
       journal FAILED_PRE_SWITCH "existing candidate differs from verified release"
       exit 1
@@ -354,7 +469,7 @@ if [[ -e "$CANDIDATE" || -L "$CANDIDATE" ]]; then
 else
   rm -rf "$CANDIDATE.tmp"
   mkdir -p "$CANDIDATE.tmp"
-  for file in "${RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
+  for file in "${STAGED_RUNTIME_FILES[@]}"; do cp -a "$TMP/source/runtime/$file" "$CANDIDATE.tmp/$file"; done
   if ! mv -T "$CANDIDATE.tmp" "$CANDIDATE"; then
     journal FAILED_PRE_SWITCH "cannot stage candidate generation"
     exit 1
@@ -395,8 +510,21 @@ fi
 if [[ "$PREVIOUS_PORT" == 18771 ]]; then CANDIDATE_PORT=18772; else CANDIDATE_PORT=18771; fi
 journal CANDIDATE_STARTING
 
+# Do not mistake a previously orphaned listener for the just-launched candidate.
+if python - "$CANDIDATE_PORT" <<'PY'
+import socket,sys
+with socket.socket() as sock:
+    sock.settimeout(1)
+    raise SystemExit(0 if sock.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)
+PY
+then
+  journal FAILED_PRE_SWITCH "candidate port is already occupied"
+  exit 1
+fi
+
 nohup env TERMUX_BRIDGE_ROOT="$HOME" TERMUX_BRIDGE_JOBS="$ROOT/jobs" TERMUX_BRIDGE_BACKEND_TOKEN_FILE="$BACKEND_TOKEN_FILE"   python "$CANDIDATE/bridge_server.py" --http "$CANDIDATE_PORT" >"$ROOT/logs/server-$TARGET.log" 2>&1 9>&- &
 CANDIDATE_PID=$!
+journal CANDIDATE_STARTING
 for _ in {1..40}; do pid_alive "$CANDIDATE_PID" && backend_health "$CANDIDATE_PORT" && break; sleep 0.25; done
 if ! pid_alive "$CANDIDATE_PID" || ! backend_health "$CANDIDATE_PORT"; then
   journal FAILED_PRE_SWITCH "candidate health failed"; kill "$CANDIDATE_PID" 2>/dev/null || true; exit 1
@@ -517,6 +645,7 @@ if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
   TRANSPORT_LOG="$ROOT/logs/tunnel-$PINNED_TUNNEL.log"
 
   nohup "$VERSIONED" run \
+    --health.listen-addr 127.0.0.1:0 \
     --control-plane.api-key "file:$KEYFILE" \
     --mcp.server-url http://127.0.0.1:8765/mcp \
     --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
@@ -536,6 +665,7 @@ if [[ "$PINNED_TUNNEL" != "$CURRENT_TUNNEL" ]]; then
   if ! pid_alive "$NEW_TUNNEL_PID"; then
     log "ERROR transport candidate failed after handoff; restoring previous transport"
     nohup "$ROOT/bin/tunnel-client-runtime" run \
+      --health.listen-addr 127.0.0.1:0 \
       --control-plane.api-key "file:$KEYFILE" \
       --mcp.server-url http://127.0.0.1:8765/mcp \
       --mcp.extra-headers "X-Bridge-Token: file:$ROUTER_TOKEN_FILE" \
