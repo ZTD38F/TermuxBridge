@@ -222,6 +222,23 @@ bridge lifecycle starts and stops addon services generically; domain-specific
 state, workers, permissions and dashboards remain owned by each addon repository.
 
 
+## Native Android/data capability diagnostics (v1.2.37)
+
+Some Android/FUSE builds expose Android/data directory metadata through
+Unicode normalization without allowing any private file reads. This is
+NOT evidence of unrestricted access. The independently versioned gallery
+addon must keep unavailable sources deferred until reading genuine image
+bytes succeeds.
+
+Run: python ~/termux-mcp-bridge/current/android_data_native.py status
+
+The tool reports separate metadata_access and file_bytes_verified fields.
+The probe-file command takes an explicitly named relative file path and
+reads at most one byte without displaying or storing its contents.
+The list command limits output to 200 items and rejects symlink/path escapes.
+No automatic search across private files, changes to original data,
+privilege escalation, third-party proxies, or gallery DB writes are made.
+
 ## Self-maintenance and troubleshooting (v1.2.14)
 
 An Android JobScheduler job (ID 38038) runs approximately hourly and survives
