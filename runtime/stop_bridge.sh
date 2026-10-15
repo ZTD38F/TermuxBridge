@@ -22,7 +22,15 @@ stop_pidfile() {
   fi
 }
 
+stop_external_addons() {
+  local current
+  current="$(readlink -f "$ROOT/current" 2>/dev/null || true)"
+  [[ -n "$current" && -f "$current/addon_services.py" ]] || return 0
+  python "$current/addon_services.py" stop --root "${TERMUX_BRIDGE_ADDONS_ROOT:-$HOME/.termux-mcp-bridge/addons}" >/dev/null 2>&1 || true
+}
+
 # Manual/full shutdown only. Seamless runtime updates do not call this script.
+stop_external_addons
 # Stop the supervisor first; otherwise it would restart the tunnel immediately.
 stop_pidfile "$ROOT/watchdog.pid" watchdog
 stop_pidfile "$ROOT/bridge.pid" tunnel

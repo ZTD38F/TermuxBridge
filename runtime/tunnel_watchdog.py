@@ -31,6 +31,8 @@ def on_signal(_signum, _frame):
 def classify_error(message: str) -> str:
     """Classify only; NEVER include raw logs or secrets in status JSON."""
     text = message.lower()
+    if re.search(r"address already in use|bind:|listen tcp .*:.*:.*", text):
+        return "PORT_CONFLICT"
     if re.search(r"\b(?:401|403)\b|unauthori[sz]ed|invalid (?:api )?(?:key|token)|authentication failed|permission denied|forbidden", text):
         return "AUTHORIZATION"
     if re.search(r"certificate|x509|tls handshake|unknown authority", text):
@@ -42,6 +44,14 @@ def classify_error(message: str) -> str:
     if re.search(r"timeout|timed out|deadline exceeded|connection reset|connection refused|network is unreachable", text):
         return "NETWORK"
     return "UNKNOWN"
+
+
+def diagnostic_lines(log_text: str) -> str:
+    """Only retain severity-tagged diagnostics; skip informational TLS inventories."""
+    return "\n".join(
+        line for line in log_text.splitlines()
+        if re.search(r"\b(?:ERROR|WARN|FATAL|PANIC)\b", line, flags=re.I)
+    )
 
 
 def log_tail(path: Path, size: int = 32768) -> str:
@@ -104,8 +114,12 @@ def run(root: Path) -> int:
     while not STOP:
         adopted = valid_adopted_pid(root)
         if adopted is not None:
-            update_status(root, state="CLIENT_RUNNING", reason="NONE", pid=adopted, adopted=True)
+            next_heartbeat = 0.0
             while not STOP and managed_role_identity(adopted, root, "tunnel"):
+                if time.monotonic() >= next_heartbeat:
+                    update_status(root, state="CLIENT_RUNNING", reason="NONE",
+                                  pid=adopted, adopted=True, attempts=failures)
+                    next_heartbeat = time.monotonic() + 60
                 sleep_interruptibly(1)
             if STOP:
                 break
@@ -133,6 +147,8 @@ def run(root: Path) -> int:
 
         argv = [
             str(client), "run",
+            # Avoid conflict with applications using the default 8080 health port.
+            "--health.listen-addr", "127.0.0.1:0",
             "--control-plane.api-key", f"file:{key}",
             "--mcp.server-url", "http://127.0.0.1:8765/mcp",
             "--mcp.extra-headers", f"X-Bridge-Token: file:{router_token}",
@@ -149,7 +165,12 @@ def run(root: Path) -> int:
                 pid_file.chmod(0o600)
                 update_status(root, state="CLIENT_RUNNING", reason="NONE", pid=process.pid,
                               adopted=False, attempts=failures)
+                next_heartbeat = time.monotonic() + 60
                 while not STOP and process.poll() is None:
+                    if time.monotonic() >= next_heartbeat:
+                        update_status(root, state="CLIENT_RUNNING", reason="NONE",
+                                      pid=process.pid, adopted=False, attempts=failures)
+                        next_heartbeat = time.monotonic() + 60
                     sleep_interruptibly(0.5)
                 if STOP and process.poll() is None:
                     process.terminate()
@@ -178,10 +199,7 @@ def run(root: Path) -> int:
         failures += 1
         # Only diagnostic severity lines are classified: INFO TLS trust
         # inventories may contain the word "certificate" without any error.
-        diagnostic = "\n".join(
-            line for line in log_tail(tunnel_log).splitlines()
-            if re.search(r"\\b(?:ERROR|WARN|FATAL|PANIC)\\b", line, flags=re.I)
-        )
+        diagnostic = diagnostic_lines(log_tail(tunnel_log))
         reason = classify_error(diagnostic)
         delay = retry_delay(failures, reason)
         update_status(root, state="RETRYING" if reason != "AUTHORIZATION" else "NEEDS_ATTENTION",

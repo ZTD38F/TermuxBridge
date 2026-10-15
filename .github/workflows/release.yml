@@ -10,6 +10,11 @@ permissions:
   id-token: write
   attestations: write
 
+# One immutable version publication at a time; retain any running publication.
+concurrency:
+  group: termuxbridge-stable-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -38,10 +43,15 @@ jobs:
       - name: Validate runtime
         run: |
           python -m py_compile runtime/*.py
-          bash -n runtime/start_bridge.sh runtime/status_bridge.sh runtime/stop_bridge.sh update_termux.sh termuxbridgectl
+          bash -n runtime/start_bridge.sh runtime/status_bridge.sh runtime/stop_bridge.sh runtime/maintain_bridge.sh runtime/scheduled_maintain_bridge.sh update_termux.sh termuxbridgectl
+      - name: Run complete regression suite (required before publishing)
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build release artifacts
         run: |
-          tar -czf "TermuxBridge-$TAG.tar.gz" \
+          bundle="$(mktemp -d)"
+          trap 'rm -rf "$bundle"' EXIT
+          bash build_release_bundle.sh "$bundle/root"
+          tar -C "$bundle/root" -czf "$GITHUB_WORKSPACE/TermuxBridge-$TAG.tar.gz" \
             runtime update_termux.sh termuxbridgectl TUNNEL_CLIENT_VERSION README.md SECURITY.md
           sha256sum "TermuxBridge-$TAG.tar.gz" > SHA256SUMS.txt
           python - <<'PY'
@@ -70,14 +80,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
-            if [[ "$target" != "${{ github.sha }}" && "$target" != "stable" ]]; then
-              echo "Release $TAG exists for a different target: $target" >&2
-              exit 1
-            fi
-            echo "Release $TAG already exists."
-          else
-            gh release create "$TAG" TermuxBridge-*.tar.gz SHA256SUMS.txt bridge-release.json \
-              --target "${{ github.sha }}" --title "TermuxBridge $TAG" --generate-notes
+          set -euo pipefail
+          existing_tag="$(git ls-remote --tags --refs origin "refs/tags/$TAG")"
+          if [[ -n "$existing_tag" ]]; then
+            echo "::error::Release $TAG already tagged; bump BRIDGE_VERSION before publishing."
+            exit 1
           fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; refusing to overwrite artifacts."
+            exit 1
+          fi
+          gh release create "$TAG" TermuxBridge-*.tar.gz SHA256SUMS.txt bridge-release.json \
+            --target "$GITHUB_SHA" --title "TermuxBridge $TAG" --generate-notes

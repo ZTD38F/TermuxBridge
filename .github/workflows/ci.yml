@@ -20,20 +20,67 @@ jobs:
 
       - name: Compile canonical runtime
         run: |
-          python -m py_compile             runtime/bridge_server.py             runtime/gallery_bridge_tools.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py             runtime/supervisor.py             runtime/recover_bridge_port.py             runtime/tunnel_watchdog.py
+          python -m py_compile             runtime/bridge_server.py             runtime/google_bridge_tools.py             runtime/local_https_proxy.py             runtime/check_bridge_syntax.py             runtime/check_phone_bridge.py             runtime/validate_phone_integration.py             runtime/supervisor.py             runtime/recover_bridge_port.py             runtime/tunnel_watchdog.py
 
       - name: Test safe port recovery
         run: |
           python -m unittest discover -s tests -v
 
+      - name: Validate legacy-updater release compatibility
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          bash build_release_bundle.sh "$tmp/bundle"
+          for legacy in gallery_bridge_tools.py gallery_intelligence.py gallery_ocr.py gallery_shizuku.py; do
+            test -f "$tmp/bundle/runtime/$legacy"
+            test -L "$tmp/bundle/runtime/$legacy"
+          done
+          # Only the read-only TermuxService entrypoint survives migration;
+          # no built-in photo processor or helper symlinks may be installed.
+          test -f "$tmp/bundle/runtime/gallery_maintenance.py"
+          test ! -L "$tmp/bundle/runtime/gallery_maintenance.py"
+          test -x "$tmp/bundle/runtime/gallery_maintenance.py"
+          mapfile -t regular < <(find "$tmp/bundle/runtime" -maxdepth 1 -type f -name '*.py' -printf '%f\n' | sort)
+          test "${#regular[@]}" -ge 21
+          mkdir "$tmp/candidate"
+          for file in "${regular[@]}"; do cp -a "$tmp/bundle/runtime/$file" "$tmp/candidate/$file"; done
+          if find "$tmp/candidate" -maxdepth 1 -name 'gallery*' ! -name 'gallery_maintenance.py' | grep -q .; then
+            echo "Removed legacy gallery processors leaked into installed candidate" >&2
+            exit 1
+          fi
+          test -x "$tmp/candidate/gallery_maintenance.py"
+          python -m py_compile "$tmp/candidate"/*.py
+
       - name: Parse shell scripts
         run: |
+          bash -n build_release_bundle.sh
           bash -n runtime/gpt
+          bash -n runtime/maintain_bridge.sh
+          bash -n runtime/boot_bridge.sh
           bash -n runtime/start_bridge.sh
           bash -n runtime/status_bridge.sh
           bash -n runtime/stop_bridge.sh
           bash -n update_termux.sh
           bash -n termuxbridgectl
+          bash -n install.sh
+
+      - name: Verify one-click installer fails safely without provisioning
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          if TERMUXBRIDGE_ROOT="$tmp/missing" PREFIX="/usr" bash install.sh >"$tmp/log" 2>&1; then
+            echo "Unprovisioned installation unexpectedly succeeded"
+            exit 1
+          fi
+          grep -Fq 'Existing deployment not found' "$tmp/log"
+          mkdir -p "$tmp/bridge"
+          if TERMUXBRIDGE_ROOT="$tmp/bridge" PREFIX="/usr" bash install.sh >"$tmp/log" 2>&1; then
+            echo "Installer unexpectedly accepted missing credentials"
+            exit 1
+          fi
+          grep -Fq 'Control-plane credential missing' "$tmp/log"
 
       - name: Validate update safety contract
         run: |

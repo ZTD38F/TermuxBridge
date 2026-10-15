@@ -124,6 +124,13 @@ fi
 
 CURRENT_GENERATION="$(cat "$BRIDGE_DIR/source_commit" 2>/dev/null || echo legacy)"
 CURRENT_PORT=18771
+ADDONS_ROOT="${TERMUX_BRIDGE_ADDONS_ROOT:-$HOME/.termux-mcp-bridge/addons}"
+
+start_external_addons() {
+  [[ -f "$CURRENT_DIR/addon_services.py" ]] || return 0
+  mkdir -p "$BRIDGE_DIR/logs"
+  python "$CURRENT_DIR/addon_services.py" start --root "$ADDONS_ROOT" >"$BRIDGE_DIR/logs/addons-start.log" 2>&1 || true
+}
 if [[ -s "$ROUTE_FILE" ]]; then
   read -r CURRENT_GENERATION CURRENT_PORT < <(python - "$ROUTE_FILE" <<'PY'
 import json,sys
@@ -158,6 +165,7 @@ start_tunnel_watchdog() {
 # A tunnel failure MUST NOT restart a healthy authenticated MCP stack.
 if pid_alive "$SERVER_PIDFILE" && pid_alive "$SUPERVISOR_PIDFILE" && pid_alive "$PROXY_PIDFILE" &&
    proxy_healthy && backend_health "$CURRENT_PORT" && router_health; then
+  start_external_addons
   start_tunnel_watchdog
   exit $?
 fi
@@ -221,4 +229,5 @@ if ! start_tunnel_watchdog; then
   exit 4
 fi
 trap - ERR INT TERM
+start_external_addons
 echo "Local Bridge ready: supervisor PID $(<"$SUPERVISOR_PIDFILE"), MCP PID $(<"$SERVER_PIDFILE"), proxy PID $(<"$PROXY_PIDFILE"). Tunnel managed separately."
