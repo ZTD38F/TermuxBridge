@@ -1,12 +1,16 @@
-# TermuxBridge Cloudflare Pages source
+# TermuxBridge Cloudflare Pages — Mode 2 (Proxy S / Text Plain)
 
-This folder is the **GitHub source of truth** for the `https://termuxbridge.pages.dev/` Pages deployment.
+Canonical GitHub source for https://termuxbridge.pages.dev/.
 
-- Browser homepage: static `index.html`, `app.js`, `style.css` with CSP and nosniff.
-- CLI root (`curl`, `wget`, PowerShell, Termux): HTTP 302 to immutable installer.
-- `/install.sh`: HTTP 302 to `https://raw.githubusercontent.com/ZTD38F/TermuxBridge/5a76c51a3c24c473147492a0d7260e51d47bd7de/install.sh`.
-- `.ASSETS.fetch` handles all other paths. No encoded PowerShell commands.
-- Always keep the installer SHA pinned to a tested Git revision. Review updates and use the existing Sonoryx governance/lease + E2E process, not an independent periodic worker.
-- A published HTTPS page does **not** prove installation was tested on a real device.
+- `GET /` and `GET /install.sh`: HTTP 200 with **raw `install.sh`**, `text/plain; charset=utf-8`, no redirects, same host in browser and Termux.
+- Immutable upstream: `https://raw.githubusercontent.com/ZTD38F/TermuxBridge/97a15e0f55477f8a3f9ba40dd660caaf494112a5/install.sh`.
+- Installer SHA-256: `740d330e86a2f80d4b849388cfe05c5d1f41fe40e1fa6dfa74e5552d13ad37c2`.
+- Identical bytes for browser, Termux, curl, wget. The `_worker.js` fails closed for upstream errors, HTML, JSON, redirects, oversize/empty content, and sets CSP, nosniff and no-store. POST yields 405.
+- `index.html` is only a static safety fallback. The old Secure Install HTML UI, app.js, style.css and `_redirects` are NOT deployed.
+- The Pages hostname is the text/script endpoint, **not** an installation-instructions dashboard. The Termux `gpt` launcher and all on-device actions remain in TermuxBridge, not in this Cloudflare Worker.
+- Publishing the script does not prove it has been executed successfully on an Android device.
 
-For deployment, build an allowlisted output directory from these files: `_worker.js`, `_headers`, `_redirects`, `index.html`, `app.js`, `style.css`. The `manifest.json` is metadata and must be checked against the website/source hash. Never upload token files.
+Tests: `node --test pages/site.test.mjs`
+Build: `bash pages/build-site.sh <new-output-directory>`
+
+This is a direct-upload Cloudflare Pages project: merging this source does **not** deploy automatically. Deploy only from CI-tested source and verify the public hostname independently.
