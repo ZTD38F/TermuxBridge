@@ -4,9 +4,13 @@
   "host": "termuxbridge.pages.dev",
   "mode": 2,
   "filename": "install.sh",
-  "install_url": "https://raw.githubusercontent.com/ZTD38F/TermuxBridge/97a15e0f55477f8a3f9ba40dd660caaf494112a5/install.sh",
-  "sha": "97a15e0f55477f8a3f9ba40dd660caaf494112a5",
-  "sha256": "740d330e86a2f80d4b849388cfe05c5d1f41fe40e1fa6dfa74e5552d13ad37c2",
+  "install_url": "https://raw.githubusercontent.com/ZTD38F/TermuxBridge/main/install.sh",
   "github": "https://github.com/ZTD38F/TermuxBridge",
-  "platform": "android"
+  "platform": "android",
+  "source_ref": "main",
+  "dynamic": true,
+  "freshness_strategy": "github-atom-sha",
+  "generator_repo": "ZTD38F/Cloudflare-Pages-Router",
+  "generator_commit": "749c164b1255d89cab25214189218a8ae5f19394",
+  "required_pages_binding": "REDIRECT_URL"
 }

@@ -1,15 +1,14 @@
-# TermuxBridge Pages deployment / rollback
+# TermuxBridge Pages rollout and rollback
 
-Project: `termuxbridge`; production hostname: `https://termuxbridge.pages.dev/`; production branch `main`.
+Production: `https://termuxbridge.pages.dev/` (Cloudflare Pages project `termuxbridge`, branch `main`).
+- Verified **dynamic Mode 2** deployment, 2026-10-29: `5383dae0-d28b-45e4-8208-67ce31d25b0e`.
+- Prior **pinned script** deployment for rollback: `712ebbd8-73b7-4562-880d-e2322f2f48db`.
+- GitHub source: `ZTD38F/TermuxBridge:main/install.sh`. The Worker reads GitHub Atom for the current SHA and then raw content by immutable SHA (fresh query parameter on every network request).
 
-Validated Mode 2 production deployment on 2026-10-29: `712ebbd8-73b7-4562-880d-e2322f2f48db`.
+1. `node --test pages/site.test.mjs` and `bash pages/build-site.sh <unused-empty-directory>`.
+2. Confirm the existing Cloudflare Pages project has `REDIRECT_URL=https://raw.githubusercontent.com/ZTD38F/TermuxBridge/main/install.sh` in both production and preview settings. Do not print tokens.
+3. Deploy the allowlisted build directory to existing project `termuxbridge` with branch `main`, using the authorized Cloudflare API. This is a **direct upload project**; merging GitHub changes does not itself deploy.
+4. Verify public `GET /`, `GET /install.sh`, HEAD, POST, browser and CLI user agents, MIME, no Location, `X-CFPR-Git-Commit`, source SHA-256 matching the actual current GitHub file and Cloudflare production deployment ID.
+5. For rollback, retain the prior pinned Worker source and production deployment `712ebbd8-73b7-4562-880d-e2322f2f48db`. Old pinned Workers **do not** follow `main`; returning to the old deployment is a deliberate freshness regression.
 
-Source: `pages/_worker.js`, pinned to `ZTD38F/TermuxBridge@97a15e0f55477f8a3f9ba40dd660caaf494112a5` (`install.sh`).
-
-1. `node --test pages/site.test.mjs`
-2. `bash pages/build-site.sh <new-empty-build-directory>` — allowlist exactly `_worker.js` and `index.html`.
-3. Use existing authorized Cloudflare credential channel; deploy that build to Pages project `termuxbridge`, branch `main`. Do not expose credentials.
-4. Independently check browser/Termux/curl user agents, `GET /`, `GET /install.sh`, HEAD, POST, `text/plain`, absence of Location, and byte-identical SHA-256 to pinned GitHub source.
-5. Confirm `production` deployment ID from Cloudflare API and retain prior deployment metadata for rollback.
-
-Old behavior (browser HTML UI + CLI 302 to GitHub) is retired and must not be reintroduced.
+Never reintroduce old HTML installer behavior or silently overwrite unrelated Pages projects. The six-digit nonce alone does not defeat GitHub raw CDN's five-minute branch cache; the Atom-SHA lookup is essential.
