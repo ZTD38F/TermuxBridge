@@ -15,7 +15,7 @@ ABI=1; BRIDGE_MAJOR=1; MAX_TOOLS=250; FAILURE_THRESHOLD=3; RETRY_SECONDS=60
 class ExternalAddonRegistry:
     def __init__(self,root=None):
         self.root=Path(root or os.environ.get("TERMUX_BRIDGE_ADDONS_ROOT", str(Path.home()/".termux-mcp-bridge/addons"))).expanduser()
-        self.lock=threading.RLock();self.modules={};self.handlers={};self.tool_to_addon={};self.manifests={};self.info={};self.virtual={};self.blocked_until={}
+        self.lock=threading.RLock();self.modules={};self.handlers={};self.tool_to_addon={};self.manifests={};self.info={};self.virtual={};self.blocked_until={};self.ui_resources={};self.ui_tools=set()
     def _private(self,p:Path):
         st=p.stat()
         if st.st_uid!=os.getuid():raise ValueError("addon path owner mismatch")
@@ -49,12 +49,40 @@ class ExternalAddonRegistry:
         if not isinstance(tools,dict) or len(tools)>MAX_TOOLS:raise ValueError("invalid addon tools")
         namespace=manifest["namespace"]
         records=[];handlers={}
+        resources=getattr(mod,"UI_RESOURCES",{})
+        tool_meta=getattr(mod,"TOOL_META",{})
+        if not isinstance(resources,dict) or not isinstance(tool_meta,dict) or len(resources)>16:
+            raise ValueError("invalid UI addon contract")
+        prepared={}
+        for uri,resource in resources.items():
+            if not isinstance(uri,str) or not re.fullmatch(r"ui://[a-z0-9_-]+/[a-zA-Z0-9_./-]+",uri) or ".." in uri or uri in self.ui_resources:
+                raise ValueError("invalid or duplicate UI resource URI")
+            if not isinstance(resource,dict) or resource.get("uri")!=uri or resource.get("mimeType")!="text/html;profile=mcp-app" or not isinstance(resource.get("text"),str) or len(resource["text"].encode("utf-8"))>2_000_000:
+                raise ValueError("invalid UI resource")
+            prepared[uri]=resource
+        if any(k not in tools for k in tool_meta):
+            raise ValueError("UI metadata references unknown tool")
+        app_tools=set()
+
         for name,value in tools.items():
             if not isinstance(name,str) or not name.startswith(namespace):raise ValueError("addon tool outside namespace")
             if name in self.tool_to_addon:raise ValueError("duplicate addon tool")
             if not isinstance(value,(tuple,list)) or len(value)!=2 or not isinstance(value[0],dict) or not callable(value[1]):raise ValueError("invalid addon tool contract")
             handlers[name]=value[1]
             records.append({"name":name,"title":name.replace("_"," ").title(),"description":str(descriptions.get(name,name))[:2000],"inputSchema":value[0],"annotations":{"readOnlyHint":name in read_only,"destructiveHint":name in destructive,"openWorldHint":name in open_world}})
+        for record in records:
+            metadata=tool_meta.get(record["name"])
+            if metadata is None:continue
+            if not isinstance(metadata,dict) or not isinstance(metadata.get("ui"),dict):
+                raise ValueError("invalid tool UI metadata")
+            ui=metadata["ui"]
+            if set(ui)-{"resourceUri","visibility"} or ("resourceUri" in ui and ui["resourceUri"] not in prepared):
+                raise ValueError("undeclared UI resource")
+            visibility=ui.get("visibility",["model","app"])
+            if not isinstance(visibility,list) or not visibility or any(v not in ("model","app") for v in visibility):
+                raise ValueError("invalid UI tool visibility")
+            record["_meta"]={"ui":ui}
+            app_tools.add(record["name"])
         virtual=getattr(mod,"VIRTUAL_SCHEMES",{})
         if not isinstance(virtual,dict):raise ValueError("invalid virtual schemes")
         for scheme,method_name in virtual.items():
@@ -66,6 +94,8 @@ class ExternalAddonRegistry:
         name=manifest["name"]
         self.modules[name]=mod;self.handlers[name]=handlers;self.manifests[name]=manifest
         self.info[name]={"status":"READY","version":manifest["version"],"namespace":namespace,"tools":len(records),"failures":0,"path":str(current)}
+        self.ui_resources.update(prepared)
+        self.ui_tools.update(app_tools)
         for tool in handlers:self.tool_to_addon[tool]=name
         return records
     def discover(self):
@@ -79,6 +109,18 @@ class ExternalAddonRegistry:
             except Exception:
                 self.info[addon_dir.name]={"status":"FAILED_LOAD","version":None,"namespace":None,"tools":0,"failures":1}
         return records
+    def list_resources(self):
+        return [{"uri":uri,"name":uri.rsplit("/",1)[-1],"mimeType":r["mimeType"]} for uri,r in sorted(self.ui_resources.items())]
+    def read_resource(self,uri):
+        if not isinstance(uri,str) or uri not in self.ui_resources:raise ValueError("unknown UI resource")
+        return {"contents":[self.ui_resources[uri]]}
+    def app_result(self,name,value):
+        if name not in self.ui_tools:return None
+        if not isinstance(value,dict) or set(value)-{"content","structuredContent","_meta","isError"} or not isinstance(value.get("content"),list):
+            raise ValueError("invalid UI tool result")
+        if "structuredContent" in value and not isinstance(value["structuredContent"],dict):raise ValueError("invalid UI structuredContent")
+        if "_meta" in value and not isinstance(value["_meta"],dict):raise ValueError("invalid UI result metadata")
+        return value
     def namespaces(self):return {m["namespace"] for m in self.manifests.values()}
     def invoke(self,tool,args):
         addon=self.tool_to_addon.get(tool)
