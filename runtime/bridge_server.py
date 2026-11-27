@@ -2,7 +2,7 @@
 """Small dependency-free MCP stdio server for a private Termux bridge."""
 from __future__ import annotations
 
-BRIDGE_VERSION = "1.2.37"
+BRIDGE_VERSION = "1.2.38"
 
 import hashlib
 import hmac
@@ -426,12 +426,22 @@ def respond(msg):
     method = msg.get("method")
     if method == "initialize":
         result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": False}}, "serverInfo": {"name": "TermuxBridge", "version": BRIDGE_VERSION}, "instructions": "Command execution is open and runs with the ordinary Termux app UID (no root assumed). File helper tools remain scoped to Termux/shared storage. Never request or expose secrets. Confirm consequential writes or destructive actions."}
+        if EXTERNAL_ADDONS.ui_resources:
+            result["capabilities"]["resources"]={"listChanged":False}
+    elif method == "resources/list": result = {"resources":EXTERNAL_ADDONS.list_resources()}
+    elif method == "resources/templates/list": result = {"resourceTemplates":[]}
+    elif method == "resources/read":
+        try:result=EXTERNAL_ADDONS.read_resource(msg.get("params",{}).get("uri"))
+        except ValueError:return {"jsonrpc":"2.0","id":mid,"error":{"code":-32002,"message":"Resource not found"}}
     elif method == "ping": result = {}
     elif method == "tools/list": result = {"tools": TOOLS}
     elif method == "tools/call":
         try:
             value = call(msg["params"]["name"], msg["params"].get("arguments", {}))
-            if isinstance(value, dict) and "__mcp_content__" in value:
+            app_result=EXTERNAL_ADDONS.app_result(msg["params"]["name"],value) if msg["params"]["name"] in EXTERNAL_TOOL_NAMES else None
+            if app_result is not None:
+                result=app_result
+            elif isinstance(value, dict) and "__mcp_content__" in value:
                 result = {"content": value["__mcp_content__"], "isError": False}
             else:
                 result = text_result(value)
